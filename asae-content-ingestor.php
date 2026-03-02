@@ -3,7 +3,7 @@
  * Plugin Name:       ASAE Content Ingestor
  * Plugin URI:        https://keithmsoares.com
  * Description:       Crawls content within a specified folder of a remote website and ingests it as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Designed for migrating legacy ASAE sites into WordPress.
- * Version:           0.0.3
+ * Version:           0.0.4
  * Author:            Keith M. Soares
  * Author URI:        https://keithmsoares.com
  * License:           CC
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ── Plugin Constants ──────────────────────────────────────────────────────────
 
 /** Semantic version string used throughout the codebase and in the UI. */
-define( 'ASAE_CI_VERSION', '0.0.3' );
+define( 'ASAE_CI_VERSION', '0.0.4' );
 
 /** Absolute path to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_PATH', plugin_dir_path( __FILE__ ) );
