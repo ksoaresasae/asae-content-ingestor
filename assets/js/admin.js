@@ -81,12 +81,13 @@
 			url    : asaeCi.ajaxUrl,
 			method : 'POST',
 			data   : {
-				action      : 'asae_ci_start_job',
-				nonce       : asaeCi.nonce,
-				source_url  : sourceUrl,
-				post_type   : $( '#asae-ci-post-type' ).val(),
-				batch_limit : $( 'input[name="batch_limit"]:checked' ).val() || '50',
-				run_type    : $( 'input[name="run_type"]:checked' ).val()    || 'dry',
+				action          : 'asae_ci_start_job',
+				nonce           : asaeCi.nonce,
+				source_url      : sourceUrl,
+				url_restriction : $.trim( $( '#asae-ci-url-restriction' ).val() ) || '',
+				post_type       : $( '#asae-ci-post-type' ).val(),
+				batch_limit     : $( 'input[name="batch_limit"]:checked' ).val() || '50',
+				run_type        : $( 'input[name="run_type"]:checked' ).val()    || 'dry',
 			},
 		} )
 		.done( function ( response ) {

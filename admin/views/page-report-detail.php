@@ -63,9 +63,15 @@ $report_date = date_i18n(
 					</td>
 				</tr>
 				<tr>
-					<th scope="row"><?php esc_html_e( 'Source URL', 'asae-content-ingestor' ); ?></th>
+					<th scope="row"><?php esc_html_e( 'RSS Feed URL', 'asae-content-ingestor' ); ?></th>
 					<td><a href="<?php echo esc_url( $report['source_url'] ); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html( $report['source_url'] ); ?></a></td>
 				</tr>
+				<?php if ( ! empty( $report['url_restriction'] ) ) : ?>
+				<tr>
+					<th scope="row"><?php esc_html_e( 'URL Restriction', 'asae-content-ingestor' ); ?></th>
+					<td><?php echo esc_html( $report['url_restriction'] ); ?></td>
+				</tr>
+				<?php endif; ?>
 				<tr>
 					<th scope="row"><?php esc_html_e( 'Post Type', 'asae-content-ingestor' ); ?></th>
 					<td><?php echo esc_html( $report['post_type'] ); ?></td>

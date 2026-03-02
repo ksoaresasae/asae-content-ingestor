@@ -117,7 +117,7 @@ class ASAE_CI_Admin {
 			'nonce'     => wp_create_nonce( self::AJAX_NONCE ),
 			'strings'   => [
 				'startingJob'    => __( 'Starting job…', 'asae-content-ingestor' ),
-				'discovering'    => __( 'Discovering URLs…', 'asae-content-ingestor' ),
+				'discovering'    => __( 'Reading RSS feed…', 'asae-content-ingestor' ),
 				'ingesting'      => __( 'Ingesting content…', 'asae-content-ingestor' ),
 				'dryRunning'     => __( 'Running dry preview…', 'asae-content-ingestor' ),
 				'completed'      => __( 'Completed.', 'asae-content-ingestor' ),
@@ -193,13 +193,14 @@ class ASAE_CI_Admin {
 		self::verify_ajax_nonce();
 		self::verify_admin_capability();
 
-		$source_url  = esc_url_raw( wp_unslash( $_POST['source_url']  ?? '' ) );
-		$post_type   = sanitize_key( $_POST['post_type']   ?? 'post' );
-		$batch_limit = sanitize_text_field( $_POST['batch_limit'] ?? '50' );
-		$run_type    = sanitize_text_field( $_POST['run_type']    ?? 'dry' );
+		$source_url      = esc_url_raw( wp_unslash( $_POST['source_url']      ?? '' ) );
+		$url_restriction = esc_url_raw( wp_unslash( $_POST['url_restriction'] ?? '' ) );
+		$post_type       = sanitize_key( $_POST['post_type']   ?? 'post' );
+		$batch_limit     = sanitize_text_field( $_POST['batch_limit'] ?? '50' );
+		$run_type        = sanitize_text_field( $_POST['run_type']    ?? 'dry' );
 
 		if ( empty( $source_url ) ) {
-			wp_send_json_error( [ 'message' => __( 'A URL to crawl is required.', 'asae-content-ingestor' ) ] );
+			wp_send_json_error( [ 'message' => __( 'An RSS feed URL is required.', 'asae-content-ingestor' ) ] );
 		}
 
 		// Validate batch_limit value.
@@ -213,10 +214,11 @@ class ASAE_CI_Admin {
 		}
 
 		$job_key = ASAE_CI_Scheduler::create_job( [
-			'source_url'  => $source_url,
-			'post_type'   => $post_type,
-			'batch_limit' => $batch_limit,
-			'run_type'    => $run_type,
+			'source_url'      => $source_url,
+			'url_restriction' => $url_restriction ?: null,
+			'post_type'       => $post_type,
+			'batch_limit'     => $batch_limit,
+			'run_type'        => $run_type,
 		] );
 
 		if ( is_wp_error( $job_key ) ) {
@@ -274,9 +276,10 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
 		}
 
-		$queue_data = json_decode( $job['queue_data'], true );
-		$disc       = $queue_data['discovery'] ?? [];
-		$ingest     = $queue_data['ingestion'] ?? [];
+		$queue_data  = json_decode( $job['queue_data'], true );
+		$disc        = $queue_data['discovery'] ?? [];
+		$ingest      = $queue_data['ingestion'] ?? [];
+		$feed_fetched = (bool) ( $disc['feed_fetched'] ?? false );
 
 		wp_send_json_success( [
 			'job_key'         => $job['job_key'],
@@ -284,8 +287,8 @@ class ASAE_CI_Admin {
 			'phase'           => $job['phase'],
 			'run_type'        => $job['run_type'],
 			'report_id'       => $job['report_id'],
-			'crawled'         => count( $disc['crawled']      ?? [] ),
-			'to_crawl'        => count( $disc['to_crawl']     ?? [] ),
+			'crawled'         => $feed_fetched ? 1 : 0,
+			'to_crawl'        => $feed_fetched ? 0 : 1,
 			'content_found'   => count( $disc['content_urls'] ?? [] ),
 			'queue_remaining' => count( $ingest['queue']      ?? [] ),
 			'processed'       => (int) ( $ingest['processed'] ?? 0 ),

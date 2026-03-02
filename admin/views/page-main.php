@@ -25,7 +25,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 	</h1>
 
 	<p class="asae-ci-intro">
-		<?php esc_html_e( 'Crawl a remote website folder and ingest its articles into WordPress. Use Dry Run to preview content before committing an Active Run.', 'asae-content-ingestor' ); ?>
+		<?php esc_html_e( 'Read an RSS feed and ingest its linked articles into WordPress. Use Dry Run to preview content before committing an Active Run.', 'asae-content-ingestor' ); ?>
 	</p>
 
 	<!-- ── Run Configuration Form ─────────────────────────────────────────── -->
@@ -45,10 +45,10 @@ if ( ! current_user_can( 'manage_options' ) ) {
 
 		<form id="asae-ci-run-form" novalidate>
 
-			<!-- Source URL -->
+			<!-- RSS Feed URL -->
 			<div class="asae-ci-field">
 				<label for="asae-ci-source-url">
-					<?php esc_html_e( 'URL to Crawl', 'asae-content-ingestor' ); ?>
+					<?php esc_html_e( 'RSS Feed URL', 'asae-content-ingestor' ); ?>
 					<span class="asae-ci-required" aria-hidden="true">*</span>
 				</label>
 				<input
@@ -56,13 +56,31 @@ if ( ! current_user_can( 'manage_options' ) ) {
 					id="asae-ci-source-url"
 					name="source_url"
 					class="regular-text"
-					placeholder="https://example.com/articles"
+					placeholder="https://example.com/feed"
 					required
 					aria-required="true"
 					aria-describedby="asae-ci-url-hint"
 				/>
 				<p id="asae-ci-url-hint" class="description">
-					<?php esc_html_e( 'All content found within this folder (and sub-folders) will be discovered. The crawler will not navigate outside this path.', 'asae-content-ingestor' ); ?>
+					<?php esc_html_e( 'The URL of the RSS or Atom feed to read. Article links in the feed will be discovered and ingested.', 'asae-content-ingestor' ); ?>
+				</p>
+			</div>
+
+			<!-- URL Restriction (Optional) -->
+			<div class="asae-ci-field">
+				<label for="asae-ci-url-restriction">
+					<?php esc_html_e( 'URL Restriction (Optional)', 'asae-content-ingestor' ); ?>
+				</label>
+				<input
+					type="url"
+					id="asae-ci-url-restriction"
+					name="url_restriction"
+					class="regular-text"
+					placeholder="https://example.com/articles/"
+					aria-describedby="asae-ci-restriction-hint"
+				/>
+				<p id="asae-ci-restriction-hint" class="description">
+					<?php esc_html_e( 'Only ingest feed links whose URL begins with this prefix. Leave blank to ingest every link in the feed.', 'asae-content-ingestor' ); ?>
 				</p>
 			</div>
 
@@ -172,11 +190,11 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		<!-- Discovery progress bar -->
 		<div class="asae-ci-progress-section" id="asae-ci-discovery-section">
 			<p class="asae-ci-progress-label">
-				<?php esc_html_e( 'URL Discovery:', 'asae-content-ingestor' ); ?>
-				<span id="asae-ci-crawled-count">0</span>
-				<?php esc_html_e( 'pages crawled,', 'asae-content-ingestor' ); ?>
+				<?php esc_html_e( 'RSS Feed:', 'asae-content-ingestor' ); ?>
 				<span id="asae-ci-found-count">0</span>
 				<?php esc_html_e( 'articles found.', 'asae-content-ingestor' ); ?>
+				<?php /* Hidden span keeps the JS target intact without displaying. */ ?>
+				<span id="asae-ci-crawled-count" aria-hidden="true" style="display:none">0</span>
 			</p>
 			<div
 				class="asae-ci-progress-bar-wrap"

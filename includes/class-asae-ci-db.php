@@ -100,6 +100,7 @@ class ASAE_CI_DB {
 			run_date        DATETIME     NOT NULL,
 			run_type        VARCHAR(10)  NOT NULL DEFAULT 'active',
 			source_url      VARCHAR(2048) NOT NULL,
+			url_restriction VARCHAR(2048) DEFAULT NULL,
 			post_type       VARCHAR(50)  NOT NULL,
 			batch_limit     VARCHAR(10)  NOT NULL,
 			status          VARCHAR(20)  NOT NULL DEFAULT 'running',

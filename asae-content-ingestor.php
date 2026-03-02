@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       ASAE Content Ingestor
  * Plugin URI:        https://keithmsoares.com
- * Description:       Crawls content within a specified folder of a remote website and ingests it as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Designed for migrating legacy ASAE sites into WordPress.
- * Version:           0.0.8
+ * Description:       Reads an RSS/Atom feed and ingests linked articles as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Supports a URL restriction prefix to filter feed links. Designed for migrating legacy ASAE sites into WordPress.
+ * Version:           0.1.0
  * Author:            Keith M. Soares
  * Author URI:        https://keithmsoares.com
  * License:           CC
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ── Plugin Constants ──────────────────────────────────────────────────────────
 
 /** Semantic version string used throughout the codebase and in the UI. */
-define( 'ASAE_CI_VERSION', '0.0.8' );
+define( 'ASAE_CI_VERSION', '0.1.0' );
 
 /** Absolute path to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_PATH', plugin_dir_path( __FILE__ ) );
@@ -34,14 +34,8 @@ define( 'ASAE_CI_PREFIX', 'asae_ci' );
 /** WP Cron hook name used for background batch processing. */
 define( 'ASAE_CI_CRON_HOOK', 'asae_ci_process_batch' );
 
-/** Number of URLs to crawl per background batch during discovery. */
-define( 'ASAE_CI_CRAWL_BATCH_SIZE', 10 );
-
 /** Number of articles to ingest per background batch. */
 define( 'ASAE_CI_INGEST_BATCH_SIZE', 5 );
-
-/** Max crawl depth to prevent runaway discovery. */
-define( 'ASAE_CI_MAX_CRAWL_DEPTH', 20 );
 
 // ── Autoload Classes ──────────────────────────────────────────────────────────
 
@@ -101,6 +95,13 @@ register_deactivation_hook( __FILE__, 'asae_ci_deactivate' );
  * WordPress core and all other plugins are fully loaded first.
  */
 function asae_ci_init() {
+	// Run a DB schema upgrade when the stored version differs from the current
+	// version. dbDelta() is idempotent and safe to call on every load.
+	if ( get_option( 'asae_ci_version' ) !== ASAE_CI_VERSION ) {
+		ASAE_CI_DB::create_tables();
+		update_option( 'asae_ci_version', ASAE_CI_VERSION );
+	}
+
 	// Register WP Cron callback for background batch processing.
 	add_action( ASAE_CI_CRON_HOOK, [ 'ASAE_CI_Scheduler', 'process_cron_batch' ] );
 

@@ -26,12 +26,13 @@ class ASAE_CI_Reports {
 	 * Inserts a new report record and returns its ID.
 	 *
 	 * @param array $data {
-	 *   @type string $run_date     MySQL datetime string.
-	 *   @type string $run_type     'dry' or 'active'.
-	 *   @type string $source_url   The crawled URL.
-	 *   @type string $post_type    WP post type used.
-	 *   @type string $batch_limit  '10', '50', '100', or 'all'.
-	 *   @type string $status       'running', 'completed', or 'failed'.
+	 *   @type string      $run_date         MySQL datetime string.
+	 *   @type string      $run_type         'dry' or 'active'.
+	 *   @type string      $source_url       The RSS feed URL.
+	 *   @type string|null $url_restriction  Optional URL prefix restriction.
+	 *   @type string      $post_type        WP post type used.
+	 *   @type string      $batch_limit      '10', '50', '100', or 'all'.
+	 *   @type string      $status           'running', 'completed', or 'failed'.
 	 * }
 	 * @return int|WP_Error New report ID or WP_Error on failure.
 	 */
@@ -42,18 +43,19 @@ class ASAE_CI_Reports {
 		$inserted = $wpdb->insert(
 			ASAE_CI_DB::reports_table(),
 			[
-				'run_date'       => $data['run_date']    ?? current_time( 'mysql' ),
-				'run_type'       => $data['run_type']    ?? 'active',
-				'source_url'     => $data['source_url']  ?? '',
-				'post_type'      => $data['post_type']   ?? 'post',
-				'batch_limit'    => $data['batch_limit'] ?? '50',
-				'status'         => $data['status']      ?? 'running',
-				'total_found'    => 0,
-				'total_ingested' => 0,
-				'total_skipped'  => 0,
-				'total_failed'   => 0,
+				'run_date'        => $data['run_date']         ?? current_time( 'mysql' ),
+				'run_type'        => $data['run_type']         ?? 'active',
+				'source_url'      => $data['source_url']       ?? '',
+				'url_restriction' => $data['url_restriction']  ?? null,
+				'post_type'       => $data['post_type']        ?? 'post',
+				'batch_limit'     => $data['batch_limit']      ?? '50',
+				'status'          => $data['status']           ?? 'running',
+				'total_found'     => 0,
+				'total_ingested'  => 0,
+				'total_skipped'   => 0,
+				'total_failed'    => 0,
 			],
-			[ '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%d', '%d' ]
+			[ '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%d', '%d' ]
 		);
 		// phpcs:enable
 

@@ -30,22 +30,24 @@ class ASAE_CI_Scheduler {
 	 * the first WP Cron event to kick off background processing.
 	 *
 	 * @param array $args {
-	 *   @type string $source_url   URL to crawl (required).
-	 *   @type string $post_type    WP post type for ingested content.
-	 *   @type string $run_type     'dry' or 'active'.
-	 *   @type string $batch_limit  '10', '50', '100', or 'all'.
+	 *   @type string $source_url       RSS feed URL to read (required).
+	 *   @type string $url_restriction  Optional URL prefix to filter feed links.
+	 *   @type string $post_type        WP post type for ingested content.
+	 *   @type string $run_type         'dry' or 'active'.
+	 *   @type string $batch_limit      '10', '50', '100', or 'all'.
 	 * }
 	 * @return string|WP_Error Unique job key on success, WP_Error on failure.
 	 */
 	public static function create_job( array $args ) {
 		global $wpdb;
 
-		$source_url  = esc_url_raw( $args['source_url']  ?? '' );
-		$post_type   = sanitize_key( $args['post_type']   ?? 'post' );
-		$run_type    = in_array( $args['run_type'] ?? 'dry', [ 'dry', 'active' ], true )
-		               ? $args['run_type'] : 'dry';
-		$batch_limit = in_array( $args['batch_limit'] ?? '50', [ '10', '50', '100', 'all' ], true )
-		               ? $args['batch_limit'] : '50';
+		$source_url      = esc_url_raw( $args['source_url']      ?? '' );
+		$url_restriction = esc_url_raw( $args['url_restriction'] ?? '' );
+		$post_type       = sanitize_key( $args['post_type']       ?? 'post' );
+		$run_type        = in_array( $args['run_type'] ?? 'dry', [ 'dry', 'active' ], true )
+		                   ? $args['run_type'] : 'dry';
+		$batch_limit     = in_array( $args['batch_limit'] ?? '50', [ '10', '50', '100', 'all' ], true )
+		                   ? $args['batch_limit'] : '50';
 
 		if ( empty( $source_url ) ) {
 			return new WP_Error( 'asae_ci_no_url', 'A source URL is required to create a job.' );
@@ -59,8 +61,8 @@ class ASAE_CI_Scheduler {
 			$limit_int = 50;
 		}
 
-		// Build initial discovery queue state.
-		$initial_queue = ASAE_CI_Crawler::build_initial_queue( $source_url, $limit_int );
+		// Build initial discovery queue state (includes url_restriction).
+		$initial_queue = ASAE_CI_Crawler::build_initial_queue( $source_url, $limit_int, $url_restriction );
 
 		// Initial job queue_data blob.
 		$queue_data = [
@@ -104,12 +106,13 @@ class ASAE_CI_Scheduler {
 
 		// Create a report record so items can be logged as they are processed.
 		$report_id = ASAE_CI_Reports::create_report( [
-			'run_date'    => $now,
-			'run_type'    => $run_type,
-			'source_url'  => $source_url,
-			'post_type'   => $post_type,
-			'batch_limit' => $batch_limit,
-			'status'      => 'running',
+			'run_date'        => $now,
+			'run_type'        => $run_type,
+			'source_url'      => $source_url,
+			'url_restriction' => $url_restriction ?: null,
+			'post_type'       => $post_type,
+			'batch_limit'     => $batch_limit,
+			'status'          => 'running',
 		] );
 
 		if ( $report_id && ! is_wp_error( $report_id ) ) {
@@ -199,8 +202,12 @@ class ASAE_CI_Scheduler {
 	// ── Internal Phase Runners ────────────────────────────────────────────────
 
 	/**
-	 * Runs one batch of URL discovery and advances the job phase to 'ingestion'
-	 * (or 'dry') when discovery is complete.
+	 * Runs the RSS feed discovery step and immediately advances the job phase
+	 * to 'ingestion' (or 'dry') once the feed has been read.
+	 *
+	 * Unlike the former BFS crawler, RSS discovery completes in a single
+	 * fetch_feed() call, so this method finishes discovery entirely before
+	 * returning.
 	 *
 	 * @param array $queue_data Full queue data from the job record.
 	 * @param array $job        Current job record.
@@ -209,50 +216,54 @@ class ASAE_CI_Scheduler {
 	private static function run_discovery_batch( array $queue_data, array $job ): array {
 		$disc = $queue_data['discovery'] ?? [];
 
-		// Run one batch of the BFS crawler.
-		$disc = ASAE_CI_Crawler::crawl_batch( $disc, ASAE_CI_CRAWL_BATCH_SIZE );
+		// Fetch all URLs from the RSS/Atom feed in a single request.
+		$feed_url        = $disc['feed_url']        ?? '';
+		$url_restriction = $disc['url_restriction'] ?? '';
+		$limit_int       = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
+		if ( 'dry' === $job['run_type'] ) {
+			$limit_int = 50;
+		}
+
+		$urls = ASAE_CI_Crawler::fetch_feed_urls( $feed_url, $url_restriction, $limit_int );
+
+		if ( is_wp_error( $urls ) ) {
+			// Mark the job as failed if the feed could not be fetched.
+			self::update_job( $job['job_key'], [ 'status' => 'failed' ] );
+			if ( $job['report_id'] ) {
+				ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'failed' ] );
+			}
+			return $queue_data;
+		}
+
+		// Mark the feed as fetched and store the discovered URLs.
+		$disc['feed_fetched'] = true;
+		$disc['content_urls'] = $urls;
 		$queue_data['discovery'] = $disc;
 
-		if ( ASAE_CI_Crawler::is_discovery_complete( $disc ) ) {
-			// Move discovered URLs into the ingestion queue.
-			$content_urls = $disc['content_urls'] ?? [];
+		// Move discovered URLs into the ingestion queue.
+		$content_urls = $urls;
 
-			// Apply the batch limit (already enforced in crawler, but double-check).
-			$limit_int = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
-			if ( 'dry' === $job['run_type'] ) {
-				$limit_int = 50;
-			}
-			if ( $limit_int > 0 ) {
-				$content_urls = array_slice( $content_urls, 0, $limit_int );
-			}
+		if ( 'active' === $job['run_type'] ) {
+			$queue_data['ingestion']['queue']     = $content_urls;
+			$queue_data['ingestion']['processed'] = 0;
+			$queue_data['ingestion']['failed']    = 0;
+			self::update_job( $job['job_key'], [
+				'phase'      => 'ingestion',
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
 
-			if ( 'active' === $job['run_type'] ) {
-				$queue_data['ingestion']['queue']     = $content_urls;
-				$queue_data['ingestion']['processed'] = 0;
-				$queue_data['ingestion']['failed']    = 0;
-				self::update_job( $job['job_key'], [
-					'phase'      => 'ingestion',
-					'queue_data' => wp_json_encode( $queue_data ),
-				] );
-
-				// Update report total_found count.
-				if ( $job['report_id'] ) {
-					ASAE_CI_Reports::update_report( (int) $job['report_id'], [
-						'total_found' => count( $content_urls ),
-					] );
-				}
-			} else {
-				// Dry run: switch to dry phase for preview generation.
-				$queue_data['ingestion']['queue']     = $content_urls;
-				$queue_data['ingestion']['processed'] = 0;
-				self::update_job( $job['job_key'], [
-					'phase'      => 'dry',
-					'queue_data' => wp_json_encode( $queue_data ),
+			// Update report total_found count.
+			if ( $job['report_id'] ) {
+				ASAE_CI_Reports::update_report( (int) $job['report_id'], [
+					'total_found' => count( $content_urls ),
 				] );
 			}
 		} else {
-			// Still discovering – persist progress.
+			// Dry run: switch to dry phase for preview generation.
+			$queue_data['ingestion']['queue']     = $content_urls;
+			$queue_data['ingestion']['processed'] = 0;
 			self::update_job( $job['job_key'], [
+				'phase'      => 'dry',
 				'queue_data' => wp_json_encode( $queue_data ),
 			] );
 		}
@@ -521,27 +532,28 @@ class ASAE_CI_Scheduler {
 		$ingest  = $queue_data['ingestion']   ?? [];
 		$dry_res = $queue_data['dry_results'] ?? [];
 
-		$crawled_count  = count( $disc['crawled']      ?? [] );
-		$to_crawl_count = count( $disc['to_crawl']     ?? [] );
-		$content_found  = count( $disc['content_urls'] ?? [] );
-		$queue_count    = count( $ingest['queue']      ?? [] );
-		$processed      = (int) ( $ingest['processed'] ?? 0 );
-		$failed         = (int) ( $ingest['failed']    ?? 0 );
+		// Map RSS feed_fetched (bool) to crawled/to_crawl counts for the UI.
+		// The discovery bar advances from 0 → 100% once the feed is read.
+		$feed_fetched  = (bool) ( $disc['feed_fetched'] ?? false );
+		$content_found = count( $disc['content_urls'] ?? [] );
+		$queue_count   = count( $ingest['queue']      ?? [] );
+		$processed     = (int) ( $ingest['processed'] ?? 0 );
+		$failed        = (int) ( $ingest['failed']    ?? 0 );
 
 		return [
-			'job_key'        => $job['job_key'],
-			'status'         => $job['status'],
-			'phase'          => $job['phase'],
-			'run_type'       => $job['run_type'],
-			'report_id'      => $job['report_id'],
-			'crawled'        => $crawled_count,
-			'to_crawl'       => $to_crawl_count,
-			'content_found'  => $content_found,
-			'queue_remaining'=> $queue_count,
-			'processed'      => $processed,
-			'failed'         => $failed,
-			'dry_results'    => 'dry' === $job['run_type'] ? $dry_res : [],
-			'is_complete'    => 'completed' === $job['status'] || 'failed' === $job['status'],
+			'job_key'         => $job['job_key'],
+			'status'          => $job['status'],
+			'phase'           => $job['phase'],
+			'run_type'        => $job['run_type'],
+			'report_id'       => $job['report_id'],
+			'crawled'         => $feed_fetched ? 1 : 0,
+			'to_crawl'        => $feed_fetched ? 0 : 1,
+			'content_found'   => $content_found,
+			'queue_remaining' => $queue_count,
+			'processed'       => $processed,
+			'failed'          => $failed,
+			'dry_results'     => 'dry' === $job['run_type'] ? $dry_res : [],
+			'is_complete'     => 'completed' === $job['status'] || 'failed' === $job['status'],
 		];
 	}
 
