@@ -1,0 +1,327 @@
+<?php
+/**
+ * ASAE Content Ingestor – Content Ingester
+ *
+ * Converts a parsed article data array (produced by ASAE_CI_Parser) into a
+ * WordPress post of the specified type. Handles:
+ *
+ *  - Duplicate detection via the stored source URL meta key.
+ *  - Image downloading: inline images are downloaded to the WP media library
+ *    and their src attributes are updated in the post content.
+ *  - Featured image: the parsed featured image URL is downloaded, attached to
+ *    the new post, and set as its thumbnail.
+ *  - Tags: all extracted taxonomy labels are created/assigned as WP Tags.
+ *  - Original URL: stored in post meta so it can be used as a unique marker and
+ *    to avoid re-ingesting the same article in future runs.
+ *
+ * All remote image downloads use wp_remote_get() and wp_insert_attachment()
+ * (WordPress core media functions) – no external libraries required.
+ *
+ * @package ASAE_Content_Ingestor
+ * @since   0.0.1
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+class ASAE_CI_Ingester {
+
+	/** Meta key used to store the original source URL on ingested posts. */
+	const SOURCE_URL_META = '_asae_ci_source_url';
+
+	// ── Public API ────────────────────────────────────────────────────────────
+
+	/**
+	 * Ingests a single parsed article into WordPress.
+	 *
+	 * @param array  $parsed_data Parsed article data from ASAE_CI_Parser::parse().
+	 * @param string $post_type   The WP post type to create (e.g. 'post').
+	 * @return int|WP_Error New post ID on success, or WP_Error on failure.
+	 */
+	public static function ingest( array $parsed_data, string $post_type = 'post' ) {
+		$source_url = $parsed_data['source_url'] ?? '';
+
+		if ( empty( $source_url ) ) {
+			return new WP_Error( 'asae_ci_no_source', 'Source URL is missing from parsed data.' );
+		}
+
+		// Abort if a post with this URL already exists.
+		if ( self::is_duplicate( $source_url ) ) {
+			return new WP_Error( 'asae_ci_duplicate', 'A post with this source URL already exists.' );
+		}
+
+		$title   = sanitize_text_field( $parsed_data['title']   ?? '' ) ?: __( '(Untitled)', 'asae-content-ingestor' );
+		$content = wp_kses_post( $parsed_data['content'] ?? '' );
+		$date    = $parsed_data['date'] ?? '';
+
+		// Build the post array.
+		$post_arr = [
+			'post_title'   => $title,
+			'post_content' => $content,
+			'post_status'  => 'publish',
+			'post_type'    => sanitize_key( $post_type ),
+		];
+
+		// Apply publication date if one was found.
+		if ( $date ) {
+			$post_arr['post_date']     = $date;
+			$post_arr['post_date_gmt'] = get_gmt_from_date( $date );
+		}
+
+		// Set author if found.
+		$author_name = sanitize_text_field( $parsed_data['author'] ?? '' );
+		if ( $author_name ) {
+			$author_id = self::get_or_create_author( $author_name );
+			if ( $author_id ) {
+				$post_arr['post_author'] = $author_id;
+			}
+		}
+
+		// Insert the post into WordPress.
+		$post_id = wp_insert_post( $post_arr, true );
+		if ( is_wp_error( $post_id ) ) {
+			return $post_id;
+		}
+
+		// Store the source URL as post meta (primary deduplication marker).
+		update_post_meta( $post_id, self::SOURCE_URL_META, esc_url_raw( $source_url ) );
+
+		// Assign tags (all taxonomy values map to WP Tags per requirements).
+		$tags = $parsed_data['tags'] ?? [];
+		if ( ! empty( $tags ) ) {
+			self::assign_tags( $post_id, $tags, $post_type );
+		}
+
+		// Download and replace inline images in the post content.
+		$updated_content = self::process_inline_images( $post_id, $content, $parsed_data['inline_images'] ?? [] );
+		if ( $updated_content !== $content ) {
+			wp_update_post( [
+				'ID'           => $post_id,
+				'post_content' => $updated_content,
+			] );
+		}
+
+		// Download and set the featured image.
+		$featured_url = $parsed_data['featured_image'] ?? '';
+		if ( $featured_url ) {
+			$attachment_id = self::download_and_attach_image( $featured_url, $post_id, $title );
+			if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
+				set_post_thumbnail( $post_id, $attachment_id );
+			}
+		}
+
+		return $post_id;
+	}
+
+	/**
+	 * Performs a dry-run parse: returns the parsed data without creating any posts.
+	 * Used in Dry Run mode to preview what would be ingested.
+	 *
+	 * @param array $parsed_data Parsed article data from ASAE_CI_Parser::parse().
+	 * @param string $post_type  The post type that would be used.
+	 * @return array Dry-run result summary.
+	 */
+	public static function dry_run_preview( array $parsed_data, string $post_type = 'post' ): array {
+		$source_url   = $parsed_data['source_url'] ?? '';
+		$is_duplicate = $source_url ? self::is_duplicate( $source_url ) : false;
+
+		return [
+			'source_url'     => $source_url,
+			'post_title'     => sanitize_text_field( $parsed_data['title'] ?? '(Untitled)' ),
+			'post_type'      => $post_type,
+			'author'         => sanitize_text_field( $parsed_data['author'] ?? '' ),
+			'date'           => $parsed_data['date'] ?? '',
+			'tags'           => $parsed_data['tags'] ?? [],
+			'has_featured'   => ! empty( $parsed_data['featured_image'] ),
+			'inline_images'  => count( $parsed_data['inline_images'] ?? [] ),
+			'is_duplicate'   => $is_duplicate,
+		];
+	}
+
+	// ── Duplicate Detection ───────────────────────────────────────────────────
+
+	/**
+	 * Checks whether any WP post already has the given source URL stored
+	 * in its post meta. This prevents re-ingesting the same article.
+	 *
+	 * @param string $source_url The original article URL.
+	 * @return bool True if a post with this URL already exists.
+	 */
+	public static function is_duplicate( string $source_url ): bool {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$count = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->postmeta}
+				 WHERE meta_key = %s AND meta_value = %s",
+				self::SOURCE_URL_META,
+				esc_url_raw( $source_url )
+			)
+		);
+		// phpcs:enable
+
+		return (int) $count > 0;
+	}
+
+	// ── Image Handling ────────────────────────────────────────────────────────
+
+	/**
+	 * Downloads all inline images to the WP media library and replaces their
+	 * src attributes in the content HTML with the new local URLs.
+	 *
+	 * @param int      $post_id       The post the images belong to.
+	 * @param string   $content       The post content HTML.
+	 * @param string[] $image_urls    Absolute URLs of images found in the content.
+	 * @return string Updated content HTML with src attributes replaced.
+	 */
+	private static function process_inline_images( int $post_id, string $content, array $image_urls ): string {
+		if ( empty( $image_urls ) || empty( $content ) ) {
+			return $content;
+		}
+
+		// Build a map of original URL → new local URL.
+		$url_map = [];
+		foreach ( $image_urls as $image_url ) {
+			if ( isset( $url_map[ $image_url ] ) ) {
+				continue; // Already processed.
+			}
+			$attachment_id = self::download_and_attach_image( $image_url, $post_id );
+			if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
+				$local_url = wp_get_attachment_url( $attachment_id );
+				if ( $local_url ) {
+					$url_map[ $image_url ] = $local_url;
+				}
+			}
+		}
+
+		// Replace old src values with new local URLs in the content.
+		foreach ( $url_map as $old_url => $new_url ) {
+			$content = str_replace(
+				[ esc_attr( $old_url ), $old_url ],
+				[ esc_attr( $new_url ), $new_url ],
+				$content
+			);
+		}
+
+		return $content;
+	}
+
+	/**
+	 * Downloads a remote image and imports it into the WordPress media library
+	 * as an attachment (child of $post_id).
+	 *
+	 * Uses WordPress's own media_handle_sideload() (via the media.php include)
+	 * for proper thumbnail generation and media library registration.
+	 *
+	 * @param string $image_url     Absolute URL of the image to download.
+	 * @param int    $post_id       Parent post ID for the attachment.
+	 * @param string $title         Optional title for the attachment.
+	 * @return int|WP_Error  Attachment post ID on success, WP_Error on failure.
+	 */
+	private static function download_and_attach_image( string $image_url, int $post_id, string $title = '' ) {
+		if ( empty( $image_url ) ) {
+			return new WP_Error( 'asae_ci_no_image', 'No image URL provided.' );
+		}
+
+		// Load the WP media-handling functions if not already available.
+		if ( ! function_exists( 'media_handle_sideload' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/media.php';
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			require_once ABSPATH . 'wp-admin/includes/image.php';
+		}
+
+		// Download the image to a temporary file using WP's HTTP API.
+		$tmp = download_url( $image_url, 60 );
+		if ( is_wp_error( $tmp ) ) {
+			return $tmp;
+		}
+
+		// Determine file name from the URL.
+		$filename = basename( parse_url( $image_url, PHP_URL_PATH ) ) ?: 'image';
+
+		$file_array = [
+			'name'     => sanitize_file_name( $filename ),
+			'tmp_name' => $tmp,
+		];
+
+		// Import into the media library.
+		$attachment_id = media_handle_sideload( $file_array, $post_id, $title ?: $filename );
+
+		// Clean up the temporary file if something went wrong.
+		if ( is_wp_error( $attachment_id ) ) {
+			@unlink( $tmp );
+		}
+
+		return $attachment_id;
+	}
+
+	// ── Taxonomy / Tag Handling ───────────────────────────────────────────────
+
+	/**
+	 * Assigns an array of tag label strings to the specified post.
+	 * Creates tags that do not yet exist. Per requirements, all taxonomy
+	 * values (categories and tags) are applied exclusively as WP Tags.
+	 *
+	 * For custom post types that do not support the built-in 'post_tag'
+	 * taxonomy, the tags are registered against the post type first.
+	 *
+	 * @param int      $post_id   The post to assign tags to.
+	 * @param string[] $tags      Array of tag label strings.
+	 * @param string   $post_type The post type (used for taxonomy compatibility).
+	 * @return void
+	 */
+	private static function assign_tags( int $post_id, array $tags, string $post_type ): void {
+		if ( empty( $tags ) ) {
+			return;
+		}
+
+		// Sanitise each tag name.
+		$sanitised = array_map( 'sanitize_text_field', $tags );
+		$sanitised = array_filter( array_unique( $sanitised ) );
+
+		if ( empty( $sanitised ) ) {
+			return;
+		}
+
+		$taxonomy = 'post_tag';
+
+		// If the post type doesn't support 'post_tag', register the relationship.
+		if ( ! is_object_in_taxonomy( $post_type, $taxonomy ) ) {
+			register_taxonomy_for_object_type( $taxonomy, $post_type );
+		}
+
+		// wp_set_post_tags accepts label strings and creates tags as needed.
+		wp_set_post_tags( $post_id, $sanitised, false );
+	}
+
+	// ── Author Handling ───────────────────────────────────────────────────────
+
+	/**
+	 * Returns the WP user ID for an author name.
+	 * Searches by display name first. If no match, returns 0 (no author override).
+	 *
+	 * Note: This plugin does not create new WP user accounts for authors.
+	 * It only assigns an existing user if the display name matches exactly.
+	 * Imported posts default to user ID 1 (admin) when no match is found.
+	 *
+	 * @param string $author_name Author name as extracted from the article.
+	 * @return int WP user ID or 0 if not found.
+	 */
+	private static function get_or_create_author( string $author_name ): int {
+		if ( empty( $author_name ) ) {
+			return 0;
+		}
+
+		// Try to find an existing user by display name.
+		$users = get_users( [
+			'search'         => $author_name,
+			'search_columns' => [ 'display_name', 'user_login' ],
+			'number'         => 1,
+			'fields'         => 'ID',
+		] );
+
+		return ! empty( $users ) ? (int) $users[0] : 0;
+	}
+}
