@@ -162,6 +162,8 @@ $report_date = date_i18n(
 					<tr>
 						<th scope="col"><?php esc_html_e( 'Source URL', 'asae-content-ingestor' ); ?></th>
 						<th scope="col"><?php esc_html_e( 'Title', 'asae-content-ingestor' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Author', 'asae-content-ingestor' ); ?></th>
+						<th scope="col"><?php esc_html_e( 'Date', 'asae-content-ingestor' ); ?></th>
 						<th scope="col"><?php esc_html_e( 'Tags', 'asae-content-ingestor' ); ?></th>
 						<th scope="col"><?php esc_html_e( 'Status', 'asae-content-ingestor' ); ?></th>
 						<th scope="col"><?php esc_html_e( 'Notes', 'asae-content-ingestor' ); ?></th>
@@ -188,6 +190,12 @@ $report_date = date_i18n(
 						} else {
 							$post_link = $post_title;
 						}
+
+						// Format the content date using the site's date format setting.
+						$item_date = '';
+						if ( ! empty( $item['post_date'] ) ) {
+							$item_date = date_i18n( get_option( 'date_format' ), strtotime( $item['post_date'] ) );
+						}
 					?>
 					<tr>
 						<td class="asae-ci-url-cell">
@@ -196,6 +204,8 @@ $report_date = date_i18n(
 							</a>
 						</td>
 						<td><?php echo $post_link; // Post link is already escaped above. ?></td>
+						<td><?php echo esc_html( $item['post_author'] ?: '—' ); ?></td>
+						<td><?php echo esc_html( $item_date ?: '—' ); ?></td>
 						<td class="asae-ci-tags-cell"><?php echo esc_html( $item['tags'] ); ?></td>
 						<td>
 							<span class="asae-ci-status <?php echo esc_attr( $status_class ); ?>">

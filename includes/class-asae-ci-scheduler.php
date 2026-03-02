@@ -319,14 +319,15 @@ class ASAE_CI_Scheduler {
 			if ( is_wp_error( $post_id ) ) {
 				$status = 'duplicate' === $post_id->get_error_code() ? 'skipped' : 'failed';
 				self::log_report_item( $job, $url, null, $parsed['tags'] ?? [], $status,
-					$post_id->get_error_message() );
+					$post_id->get_error_message(), $parsed['title'] ?? '',
+					$parsed['author'] ?? '', $parsed['date'] ?? '' );
 				if ( 'failed' === $status ) {
 					$failed++;
 				}
 			} else {
 				$done++;
 				self::log_report_item( $job, $url, $post_id, $parsed['tags'] ?? [], 'ingested',
-					'', $parsed['title'] ?? '' );
+					'', $parsed['title'] ?? '', $parsed['author'] ?? '', $parsed['date'] ?? '' );
 			}
 		}
 
@@ -394,7 +395,7 @@ class ASAE_CI_Scheduler {
 			// Log to the report as a dry item (no post created).
 			self::log_report_item( $job, $url, null, $preview['tags'], 'dry',
 				$preview['is_duplicate'] ? 'Would be skipped (duplicate).' : '',
-				$preview['post_title'] );
+				$preview['post_title'], $preview['author'] ?? '', $preview['date'] ?? '' );
 		}
 
 		$ingest['queue']          = $queue;
@@ -495,11 +496,14 @@ class ASAE_CI_Scheduler {
 	 * @param string   $status      'ingested', 'skipped', 'failed', or 'dry'.
 	 * @param string   $notes       Optional notes for the report.
 	 * @param string   $post_title  Article title.
+	 * @param string   $post_author Author name as extracted from the article.
+	 * @param string   $post_date   Publication date (Y-m-d H:i:s) from the article.
 	 * @return void
 	 */
 	private static function log_report_item( array $job, string $source_url, ?int $wp_post_id,
 	                                          array $tags, string $status, string $notes = '',
-	                                          string $post_title = '' ): void {
+	                                          string $post_title = '', string $post_author = '',
+	                                          string $post_date = '' ): void {
 		if ( empty( $job['report_id'] ) ) {
 			return;
 		}
@@ -508,6 +512,8 @@ class ASAE_CI_Scheduler {
 			'source_url'  => $source_url,
 			'wp_post_id'  => $wp_post_id,
 			'post_title'  => $post_title,
+			'post_author' => $post_author ?: null,
+			'post_date'   => $post_date   ?: null,
 			'tags'        => implode( ', ', $tags ),
 			'item_status' => $status,
 			'notes'       => $notes,

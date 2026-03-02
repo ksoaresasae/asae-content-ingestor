@@ -116,14 +116,16 @@ class ASAE_CI_DB {
 		// ── Report items table ────────────────────────────────────────────────
 		// One row per discovered article within a report.
 		$sql_report_items = "CREATE TABLE " . self::report_items_table() . " (
-			id          BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-			report_id   BIGINT(20) UNSIGNED NOT NULL,
-			source_url  VARCHAR(2048) NOT NULL,
-			wp_post_id  BIGINT(20) UNSIGNED DEFAULT NULL,
-			post_title  TEXT,
-			tags        TEXT,
-			item_status VARCHAR(20) NOT NULL DEFAULT 'pending',
-			notes       TEXT,
+			id           BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+			report_id    BIGINT(20) UNSIGNED NOT NULL,
+			source_url   VARCHAR(2048) NOT NULL,
+			wp_post_id   BIGINT(20) UNSIGNED DEFAULT NULL,
+			post_title   TEXT,
+			post_author  VARCHAR(255) DEFAULT NULL,
+			post_date    DATETIME     DEFAULT NULL,
+			tags         TEXT,
+			item_status  VARCHAR(20) NOT NULL DEFAULT 'pending',
+			notes        TEXT,
 			PRIMARY KEY  (id),
 			KEY report_id (report_id),
 			KEY item_status (item_status)

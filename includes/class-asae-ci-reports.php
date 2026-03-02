@@ -163,12 +163,14 @@ class ASAE_CI_Reports {
 	 *
 	 * @param int   $report_id The parent report ID.
 	 * @param array $item {
-	 *   @type string   $source_url   Original article URL.
-	 *   @type int|null $wp_post_id   Created post ID (null if not ingested).
-	 *   @type string   $post_title   Article title.
-	 *   @type string   $tags         Comma-separated tag list.
-	 *   @type string   $item_status  'ingested', 'skipped', 'failed', or 'dry'.
-	 *   @type string   $notes        Optional notes.
+	 *   @type string      $source_url   Original article URL.
+	 *   @type int|null    $wp_post_id   Created post ID (null if not ingested).
+	 *   @type string      $post_title   Article title.
+	 *   @type string|null $post_author  Author name extracted from the article.
+	 *   @type string|null $post_date    Publication date (Y-m-d H:i:s) from the article.
+	 *   @type string      $tags         Comma-separated tag list.
+	 *   @type string      $item_status  'ingested', 'skipped', 'failed', or 'dry'.
+	 *   @type string      $notes        Optional notes.
 	 * }
 	 * @return int|WP_Error New item ID or WP_Error.
 	 */
@@ -183,11 +185,13 @@ class ASAE_CI_Reports {
 				'source_url'  => $item['source_url']  ?? '',
 				'wp_post_id'  => $item['wp_post_id']  ?? null,
 				'post_title'  => $item['post_title']  ?? '',
+				'post_author' => $item['post_author']  ?? null,
+				'post_date'   => $item['post_date']    ?? null,
 				'tags'        => $item['tags']         ?? '',
 				'item_status' => $item['item_status']  ?? 'pending',
 				'notes'       => $item['notes']        ?? '',
 			],
-			[ '%d', '%s', '%d', '%s', '%s', '%s', '%s' ]
+			[ '%d', '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s' ]
 		);
 		// phpcs:enable
 

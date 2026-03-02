@@ -289,10 +289,15 @@
 			var statusLabel = item.is_duplicate ? 'Would skip (duplicate)' : 'Would ingest';
 			var statusClass = item.is_duplicate ? 'asae-ci-status-warning' : 'asae-ci-status-info';
 			var tagsText    = Array.isArray( item.tags ) ? item.tags.join( ', ' ) : ( item.tags || '' );
+			var authorText  = item.author || '—';
+			// Show only the date portion (YYYY-MM-DD) when a full datetime is present.
+			var dateText    = item.date ? item.date.replace( /\s.*$/, '' ) : '—';
 
 			return '<tr>' +
 				'<td class="asae-ci-url-cell"><a href="' + escAttr( item.source_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( item.source_url ) + '</a></td>' +
 				'<td>' + escHtml( item.post_title || '(untitled)' ) + '</td>' +
+				'<td>' + escHtml( authorText ) + '</td>' +
+				'<td>' + escHtml( dateText ) + '</td>' +
 				'<td>' + escHtml( tagsText ) + '</td>' +
 				'<td><span class="asae-ci-status ' + statusClass + '">' + escHtml( statusLabel ) + '</span></td>' +
 				'</tr>';
@@ -303,6 +308,8 @@
 			'<thead><tr>' +
 			'<th scope="col">Source URL</th>' +
 			'<th scope="col">Title</th>' +
+			'<th scope="col">Author</th>' +
+			'<th scope="col">Date</th>' +
 			'<th scope="col">Tags</th>' +
 			'<th scope="col">Action</th>' +
 			'</tr></thead>' +
