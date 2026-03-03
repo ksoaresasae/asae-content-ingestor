@@ -69,19 +69,30 @@ class ASAE_CI_Ingester {
 			$post_arr['post_date_gmt'] = get_gmt_from_date( $date );
 		}
 
-		// Set author if found.
-		$author_name = sanitize_text_field( $parsed_data['author'] ?? '' );
-		if ( $author_name ) {
-			$author_id = self::get_or_create_author( $author_name );
-			if ( $author_id ) {
-				$post_arr['post_author'] = $author_id;
-			}
+		// Provision author – finds or creates a subscriber user; deduplicates by login slug.
+		$author_id = self::get_or_create_author_user(
+			sanitize_text_field( $parsed_data['author']         ?? '' ),
+			$parsed_data['author_bio_url']                       ?? '',
+			sanitize_textarea_field( $parsed_data['author_bio']  ?? '' ),
+			$parsed_data['author_photo_url']                     ?? ''
+		);
+		if ( $author_id ) {
+			$post_arr['post_author'] = $author_id;
 		}
 
 		// Insert the post into WordPress.
 		$post_id = wp_insert_post( $post_arr, true );
 		if ( is_wp_error( $post_id ) ) {
 			return $post_id;
+		}
+
+		// Assign author via Co-Authors Plus if the plugin is active.
+		if ( $author_id && self::cap_is_active() ) {
+			global $coauthors_plus;
+			$author_user = get_user_by( 'id', $author_id );
+			if ( $author_user ) {
+				$coauthors_plus->add_coauthors( $post_id, [ $author_user->user_login ], false );
+			}
 		}
 
 		// Store the source URL as post meta (primary deduplication marker).
@@ -299,29 +310,203 @@ class ASAE_CI_Ingester {
 	// ── Author Handling ───────────────────────────────────────────────────────
 
 	/**
-	 * Returns the WP user ID for an author name.
-	 * Searches by display name first. If no match, returns 0 (no author override).
+	 * Finds or creates a WordPress subscriber user for the given author.
 	 *
-	 * Note: This plugin does not create new WP user accounts for authors.
-	 * It only assigns an existing user if the display name matches exactly.
-	 * Imported posts default to user ID 1 (admin) when no match is found.
+	 * Deduplication strategy (in priority order):
+	 *  1. user_login match: 'asae-ci-' + sanitize_title($name) (deterministic slug).
+	 *  2. _asae_ci_author_name user-meta match (fallback for edge cases).
+	 *  3. Create a new subscriber user if neither check finds a match.
 	 *
-	 * @param string $author_name Author name as extracted from the article.
-	 * @return int WP user ID or 0 if not found.
+	 * After creating a new user, the method optionally:
+	 *  - Fetches the author's bio page (one HTTP request max) for additional data.
+	 *  - Downloads and stores the author's photo as a WP media attachment.
+	 *
+	 * New users are created with the 'subscriber' role only — they have no
+	 * publish, edit, delete, or admin capabilities.
+	 *
+	 * @param string $name      Display name of the author.
+	 * @param string $bio_url   URL to the author's bio/profile page (may be empty).
+	 * @param string $bio_text  Bio text extracted inline from the article.
+	 * @param string $photo_url URL to the author's photo (may be empty).
+	 * @return int WP user ID, or 0 on failure / no name.
 	 */
-	private static function get_or_create_author( string $author_name ): int {
-		if ( empty( $author_name ) ) {
+	private static function get_or_create_author_user( string $name, string $bio_url, string $bio_text, string $photo_url ): int {
+		if ( empty( $name ) ) {
 			return 0;
 		}
 
-		// Try to find an existing user by display name.
-		$users = get_users( [
-			'search'         => $author_name,
-			'search_columns' => [ 'display_name', 'user_login' ],
-			'number'         => 1,
-			'fields'         => 'ID',
-		] );
+		$login = 'asae-ci-' . sanitize_title( $name );
 
-		return ! empty( $users ) ? (int) $users[0] : 0;
+		// 1. Check by deterministic login slug.
+		$user = get_user_by( 'login', $login );
+
+		// 2. Fall back to meta-based lookup.
+		if ( ! $user ) {
+			$found = get_users( [
+				'meta_key'   => '_asae_ci_author_name',
+				'meta_value' => $name,
+				'number'     => 1,
+			] );
+			if ( ! empty( $found ) ) {
+				$user = $found[0];
+			}
+		}
+
+		// 3. Create a new subscriber user.
+		if ( ! $user ) {
+			$user_id = wp_insert_user( [
+				'user_login'   => $login,
+				'user_pass'    => wp_generate_password( 24, true, true ),
+				'display_name' => $name,
+				'role'         => 'subscriber',
+			] );
+
+			if ( is_wp_error( $user_id ) ) {
+				return 0;
+			}
+
+			update_user_meta( $user_id, '_asae_ci_author_name', $name );
+
+			// Optionally enrich from bio page (one-level follow, no recursion).
+			if ( $bio_url ) {
+				update_user_meta( $user_id, '_asae_ci_source_bio_url', esc_url_raw( $bio_url ) );
+				$page_data = self::fetch_author_bio_page( $bio_url );
+				if ( ! empty( $page_data['bio'] ) && empty( $bio_text ) ) {
+					$bio_text = $page_data['bio'];
+				}
+				if ( ! empty( $page_data['photo_url'] ) && empty( $photo_url ) ) {
+					$photo_url = $page_data['photo_url'];
+				}
+			}
+
+			// Store bio as WP user description.
+			if ( $bio_text ) {
+				update_user_meta( $user_id, 'description', $bio_text );
+			}
+
+			// Download and store author photo.
+			if ( $photo_url ) {
+				self::set_author_photo( $user_id, $photo_url, $name );
+			}
+
+			$user = get_user_by( 'id', $user_id );
+		}
+
+		return $user ? (int) $user->ID : 0;
+	}
+
+	/**
+	 * Fetches an author's bio/profile page and extracts bio text and a photo URL.
+	 * Makes at most one HTTP request (no recursive following).
+	 *
+	 * Extraction priority:
+	 *  Bio  : og:description → meta[name="description"]
+	 *  Photo: og:image → <img> inside known author-block class patterns
+	 *
+	 * @param string $bio_url Absolute URL of the author's profile page.
+	 * @return array { bio: string, photo_url: string }
+	 */
+	private static function fetch_author_bio_page( string $bio_url ): array {
+		$result = [ 'bio' => '', 'photo_url' => '' ];
+
+		if ( empty( $bio_url ) ) {
+			return $result;
+		}
+
+		$response = wp_remote_get( $bio_url, [ 'timeout' => 15, 'sslverify' => false ] );
+		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			return $result;
+		}
+
+		$html = wp_remote_retrieve_body( $response );
+		if ( empty( $html ) ) {
+			return $result;
+		}
+
+		$dom = new DOMDocument();
+		@$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
+		$xpath = new DOMXPath( $dom );
+
+		// Bio: og:description first, then meta description.
+		$og_desc = $xpath->query( '//meta[@property="og:description"]/@content' );
+		if ( $og_desc && $og_desc->length ) {
+			$result['bio'] = sanitize_textarea_field( $og_desc->item( 0 )->nodeValue );
+		} else {
+			$meta_desc = $xpath->query( '//meta[@name="description"]/@content' );
+			if ( $meta_desc && $meta_desc->length ) {
+				$result['bio'] = sanitize_textarea_field( $meta_desc->item( 0 )->nodeValue );
+			}
+		}
+
+		// Photo: og:image first.
+		$og_img = $xpath->query( '//meta[@property="og:image"]/@content' );
+		if ( $og_img && $og_img->length ) {
+			$result['photo_url'] = esc_url_raw( $og_img->item( 0 )->nodeValue );
+		} else {
+			// Fall back to image inside known author block class patterns.
+			$block_classes = [ 'author-block', 'author-info', 'author-card', 'author-bio' ];
+			foreach ( $block_classes as $cls ) {
+				$imgs = $xpath->query( '//*[contains(@class,"' . $cls . '")]//img/@src' );
+				if ( $imgs && $imgs->length ) {
+					$src = trim( $imgs->item( 0 )->nodeValue );
+					if ( $src ) {
+						$result['photo_url'] = esc_url_raw( $src );
+						break;
+					}
+				}
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Downloads a remote author photo and stores it in the WP media library.
+	 *
+	 * Stores the attachment ID in '_asae_ci_author_photo_id' user meta and sets
+	 * 'simple_local_avatar' user meta for Simple Local Avatars plugin compatibility.
+	 * Skips the download if a photo was already stored for this user.
+	 *
+	 * @param int    $user_id   The WP user ID.
+	 * @param string $photo_url Absolute URL of the author's photo.
+	 * @param string $name      Author display name (used as attachment title).
+	 * @return void
+	 */
+	private static function set_author_photo( int $user_id, string $photo_url, string $name ): void {
+		if ( empty( $photo_url ) || ! $user_id ) {
+			return;
+		}
+
+		// Don't re-download if a photo is already stored.
+		if ( get_user_meta( $user_id, '_asae_ci_author_photo_id', true ) ) {
+			return;
+		}
+
+		// post_id = 0 because the attachment belongs to the user, not a post.
+		$attachment_id = self::download_and_attach_image( $photo_url, 0, $name );
+		if ( is_wp_error( $attachment_id ) || ! $attachment_id ) {
+			return;
+		}
+
+		update_user_meta( $user_id, '_asae_ci_author_photo_id', $attachment_id );
+
+		// Simple Local Avatars integration.
+		$local_url = wp_get_attachment_url( $attachment_id );
+		if ( $local_url ) {
+			update_user_meta( $user_id, 'simple_local_avatar', [ 'full' => $local_url ] );
+		}
+	}
+
+	/**
+	 * Checks whether the Co-Authors Plus plugin is active and its global
+	 * $coauthors_plus object is available for API calls.
+	 *
+	 * @return bool True if Co-Authors Plus is usable.
+	 */
+	private static function cap_is_active(): bool {
+		global $coauthors_plus;
+		return ! empty( $coauthors_plus )
+			&& is_object( $coauthors_plus )
+			&& ( class_exists( 'CoAuthors_Plus' ) || function_exists( 'get_coauthors' ) );
 	}
 }

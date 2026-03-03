@@ -53,16 +53,9 @@ class ASAE_CI_Scheduler {
 			return new WP_Error( 'asae_ci_no_url', 'A source URL is required to create a job.' );
 		}
 
-		// Build the integer limit for the crawler (0 = unlimited).
-		$limit_int = self::batch_limit_to_int( $batch_limit, $run_type );
-
-		// For Dry Runs, always cap at 50.
-		if ( 'dry' === $run_type ) {
-			$limit_int = 50;
-		}
-
-		// Build initial discovery queue state (includes url_restriction).
-		$initial_queue = ASAE_CI_Crawler::build_initial_queue( $source_url, $limit_int, $url_restriction );
+		// Build initial discovery queue state (limit=0: discovery always fetches all
+		// feed URLs; batch_limit is enforced during ingestion to find N genuinely new items).
+		$initial_queue = ASAE_CI_Crawler::build_initial_queue( $source_url, 0, $url_restriction );
 
 		// Initial job queue_data blob.
 		$queue_data = [
@@ -216,15 +209,13 @@ class ASAE_CI_Scheduler {
 	private static function run_discovery_batch( array $queue_data, array $job ): array {
 		$disc = $queue_data['discovery'] ?? [];
 
-		// Fetch all URLs from the RSS/Atom feed in a single request.
+		// Fetch ALL available URLs from the feed (limit = 0 = unlimited).
+		// The batch_limit is enforced during ingestion so we accumulate N genuinely
+		// new (non-duplicate) items instead of stopping at the first N feed entries.
 		$feed_url        = $disc['feed_url']        ?? '';
 		$url_restriction = $disc['url_restriction'] ?? '';
-		$limit_int       = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
-		if ( 'dry' === $job['run_type'] ) {
-			$limit_int = 50;
-		}
 
-		$urls = ASAE_CI_Crawler::fetch_feed_urls( $feed_url, $url_restriction, $limit_int );
+		$urls = ASAE_CI_Crawler::fetch_feed_urls( $feed_url, $url_restriction, 0 );
 
 		if ( is_wp_error( $urls ) ) {
 			// Mark the job as failed if the feed could not be fetched.
@@ -279,10 +270,11 @@ class ASAE_CI_Scheduler {
 	 * @return array Updated queue_data.
 	 */
 	private static function run_ingestion_batch( array $queue_data, array $job ): array {
-		$ingest = $queue_data['ingestion'] ?? [];
-		$queue  = $ingest['queue']   ?? [];
-		$done   = (int) ( $ingest['processed'] ?? 0 );
-		$failed = (int) ( $ingest['failed']    ?? 0 );
+		$ingest    = $queue_data['ingestion'] ?? [];
+		$queue     = $ingest['queue']   ?? [];
+		$done      = (int) ( $ingest['processed'] ?? 0 );
+		$failed    = (int) ( $ingest['failed']    ?? 0 );
+		$limit_int = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
 
 		$count = 0;
 
@@ -328,6 +320,11 @@ class ASAE_CI_Scheduler {
 				$done++;
 				self::log_report_item( $job, $url, $post_id, $parsed['tags'] ?? [], 'ingested',
 					'', $parsed['title'] ?? '', $parsed['author'] ?? '', $parsed['date'] ?? '' );
+				// Stop once we've ingested the requested number of genuinely new items.
+				if ( $limit_int > 0 && $done >= $limit_int ) {
+					$queue = [];
+					break;
+				}
 			}
 		}
 
@@ -361,6 +358,7 @@ class ASAE_CI_Scheduler {
 		$ingest      = $queue_data['ingestion']   ?? [];
 		$queue       = $ingest['queue']            ?? [];
 		$done        = (int) ( $ingest['processed'] ?? 0 );
+		$new_count   = (int) ( $ingest['new_count']   ?? 0 ); // Non-duplicate items so far.
 		$dry_results = $queue_data['dry_results']  ?? [];
 
 		$count = 0;
@@ -391,15 +389,25 @@ class ASAE_CI_Scheduler {
 
 			$dry_results[] = $preview;
 			$done++;
+			if ( ! $preview['is_duplicate'] ) {
+				$new_count++;
+			}
 
 			// Log to the report as a dry item (no post created).
 			self::log_report_item( $job, $url, null, $preview['tags'], 'dry',
 				$preview['is_duplicate'] ? 'Would be skipped (duplicate).' : '',
 				$preview['post_title'], $preview['author'] ?? '', $preview['date'] ?? '' );
+
+			// Stop once we have 50 genuinely new (non-duplicate) preview items.
+			if ( $new_count >= 50 ) {
+				$queue = [];
+				break;
+			}
 		}
 
 		$ingest['queue']          = $queue;
 		$ingest['processed']      = $done;
+		$ingest['new_count']      = $new_count;
 		$queue_data['ingestion']  = $ingest;
 		$queue_data['dry_results'] = $dry_results;
 

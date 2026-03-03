@@ -44,6 +44,28 @@ class ASAE_CI_Parser {
 	 * @param string $html The raw HTML source of the page.
 	 * @return array Parsed article data.
 	 */
+	/**
+	 * Main entry point. Parses an HTML page and returns a structured data array.
+	 *
+	 * Returned array shape:
+	 * {
+	 *   title            : string   – Article title
+	 *   content          : string   – Body HTML (cleaned, embeds preserved)
+	 *   author           : string   – Author display name (empty if not found)
+	 *   author_bio       : string   – Author bio paragraph extracted from the article
+	 *   author_bio_url   : string   – URL of the author's full profile page (empty if none)
+	 *   author_photo_url : string   – Author photo URL found in the article (empty if none)
+	 *   date             : string   – Publication date in Y-m-d H:i:s (empty if not found)
+	 *   tags             : string[] – All taxonomy labels mapped to WP tags
+	 *   featured_image   : string   – Absolute URL of the featured/OG image (empty if none)
+	 *   inline_images    : string[] – All other image URLs found in the content
+	 *   source_url       : string   – The source URL passed in (echoed back)
+	 * }
+	 *
+	 * @param string $url  The URL of the page (used to resolve relative paths).
+	 * @param string $html The raw HTML source of the page.
+	 * @return array Parsed article data.
+	 */
 	public static function parse( string $url, string $html ): array {
 		// Initialise a silent DOMDocument for the full page.
 		$dom = new DOMDocument();
@@ -54,12 +76,13 @@ class ASAE_CI_Parser {
 		$xpath = new DOMXPath( $dom );
 
 		// Extract each piece of article data.
-		$title         = self::extract_title( $dom, $xpath );
-		$author        = self::extract_author( $dom, $xpath );
-		$date          = self::extract_date( $dom, $xpath );
-		$tags          = self::extract_taxonomies( $dom, $xpath );
-		$featured_img  = self::extract_featured_image( $dom, $xpath, $url );
-		$content_node  = self::find_content_node( $dom, $xpath );
+		$title          = self::extract_title( $dom, $xpath );
+		$author         = self::extract_author( $dom, $xpath );
+		$author_context = self::extract_author_context( $dom, $xpath, $url );
+		$date           = self::extract_date( $dom, $xpath );
+		$tags           = self::extract_taxonomies( $dom, $xpath );
+		$featured_img   = self::extract_featured_image( $dom, $xpath, $url );
+		$content_node   = self::find_content_node( $dom, $xpath );
 
 		// Build the body HTML string with embeds preserved and inline images resolved.
 		$content = '';
@@ -71,14 +94,17 @@ class ASAE_CI_Parser {
 		$inline_images = self::extract_inline_image_urls( $content, $url );
 
 		return [
-			'title'         => $title,
-			'content'       => $content,
-			'author'        => $author,
-			'date'          => $date,
-			'tags'          => $tags,
-			'featured_image'=> $featured_img,
-			'inline_images' => $inline_images,
-			'source_url'    => $url,
+			'title'            => $title,
+			'content'          => $content,
+			'author'           => $author,
+			'author_bio'       => $author_context['bio'],
+			'author_bio_url'   => $author_context['bio_url'],
+			'author_photo_url' => $author_context['photo_url'],
+			'date'             => $date,
+			'tags'             => $tags,
+			'featured_image'   => $featured_img,
+			'inline_images'    => $inline_images,
+			'source_url'       => $url,
 		];
 	}
 
@@ -200,6 +226,133 @@ class ASAE_CI_Parser {
 		}
 
 		return '';
+	}
+
+	// ── Author Context Extraction ─────────────────────────────────────────────
+
+	/**
+	 * Extracts supplementary author context from an article page:
+	 * the author bio paragraph, a link to the author's full profile page (if
+	 * present), and the author photo URL (if present).
+	 *
+	 * Looks in:
+	 *  1. <a rel="author"> — profile link on or near the byline.
+	 *  2. An element with class "author-block" or "author-info" — a common
+	 *     pattern where CMSes embed an author card at the end of an article.
+	 *     Within that block it looks for the first <p> (bio text), the first
+	 *     <img> (photo), and any <a> whose href looks like a profile page.
+	 *
+	 * @param DOMDocument $dom      Parsed DOM.
+	 * @param DOMXPath    $xpath    XPath evaluator.
+	 * @param string      $page_url Source page URL (for resolving relative paths).
+	 * @return array { bio: string, bio_url: string, photo_url: string }
+	 */
+	private static function extract_author_context( DOMDocument $dom, DOMXPath $xpath, string $page_url ): array {
+		$bio       = '';
+		$bio_url   = '';
+		$photo_url = '';
+
+		// 1. <a rel="author"> — the most semantic signal for a profile link.
+		$rel_author = $xpath->query( '//a[@rel="author"]/@href' );
+		if ( $rel_author && $rel_author->length > 0 ) {
+			$href = trim( $rel_author->item(0)->nodeValue );
+			if ( $href ) {
+				$bio_url = self::resolve_author_url( $href, $page_url );
+			}
+		}
+
+		// 2. Author block element — common CMS pattern for an inline author card.
+		$block_xpaths = [
+			'//*[contains(@class,"author-block")]',
+			'//*[contains(@class,"author-info")]',
+			'//*[contains(@class,"author-card")]',
+			'//*[contains(@class,"author-bio")]',
+		];
+
+		foreach ( $block_xpaths as $expr ) {
+			$blocks = $xpath->query( $expr );
+			if ( ! $blocks || $blocks->length === 0 ) {
+				continue;
+			}
+			$block = $blocks->item(0);
+
+			// Bio text: first <p> inside the block.
+			$paras = $xpath->query( './/p', $block );
+			if ( $paras && $paras->length > 0 ) {
+				$val = trim( $paras->item(0)->textContent );
+				if ( $val ) {
+					$bio = $val;
+				}
+			}
+
+			// Photo: first <img> inside the block.
+			if ( ! $photo_url ) {
+				$imgs = $xpath->query( './/img/@src', $block );
+				if ( $imgs && $imgs->length > 0 ) {
+					$src = trim( $imgs->item(0)->nodeValue );
+					if ( $src ) {
+						$photo_url = self::resolve_image_url( $src, $page_url );
+					}
+				}
+			}
+
+			// Profile link: any <a> with a non-anchor, non-search href.
+			if ( ! $bio_url ) {
+				$links = $xpath->query( './/a/@href', $block );
+				if ( $links ) {
+					foreach ( $links as $href_node ) {
+						$href = trim( $href_node->nodeValue );
+						// Skip empty, anchor-only, or search result links.
+						if ( $href && '#' !== $href[0] && false === strpos( $href, '/search' ) ) {
+							$bio_url = self::resolve_author_url( $href, $page_url );
+							break;
+						}
+					}
+				}
+			}
+
+			break; // Use the first matching author block only.
+		}
+
+		return [
+			'bio'       => $bio,
+			'bio_url'   => $bio_url,
+			'photo_url' => $photo_url,
+		];
+	}
+
+	/**
+	 * Resolves an author profile href to an absolute URL.
+	 * Identical logic to resolve_image_url() but without the data: guard,
+	 * since author links are navigation URLs not image sources.
+	 *
+	 * @param string $href     The raw href value.
+	 * @param string $page_url The page URL used as the base.
+	 * @return string Absolute URL or empty string.
+	 */
+	private static function resolve_author_url( string $href, string $page_url ): string {
+		if ( empty( $href ) ) {
+			return '';
+		}
+		if ( preg_match( '/^https?:\/\//i', $href ) ) {
+			return $href;
+		}
+		$base = parse_url( $page_url );
+		if ( empty( $base['scheme'] ) || empty( $base['host'] ) ) {
+			return '';
+		}
+		$origin = $base['scheme'] . '://' . $base['host'];
+		if ( ! empty( $base['port'] ) ) {
+			$origin .= ':' . $base['port'];
+		}
+		if ( str_starts_with( $href, '//' ) ) {
+			return $base['scheme'] . ':' . $href;
+		}
+		if ( str_starts_with( $href, '/' ) ) {
+			return $origin . $href;
+		}
+		$base_path = isset( $base['path'] ) ? dirname( $base['path'] ) : '/';
+		return $origin . rtrim( $base_path, '/' ) . '/' . $href;
 	}
 
 	// ── Date Extraction ───────────────────────────────────────────────────────
