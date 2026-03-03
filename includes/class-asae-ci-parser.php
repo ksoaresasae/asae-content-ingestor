@@ -676,11 +676,13 @@ class ASAE_CI_Parser {
 		$content_imgs = $xpath->query(
 			'(//article//img | //figure//img
 			| //*[@itemprop="articleBody"]//img
+			| //*[@role="main"]//img
 			| //*[contains(@class,"article-body")]//img
 			| //*[contains(@class,"entry-content")]//img
 			| //*[contains(@class,"post-content")]//img
 			| //*[contains(@class,"content-body")]//img
-			| //*[contains(@class,"story-body")]//img)[1]'
+			| //*[contains(@class,"story-body")]//img
+			| //*[contains(@class,"rich-text")]//img)[1]'
 		);
 		if ( $content_imgs && $content_imgs->length > 0 ) {
 			$src = trim( $content_imgs->item(0)->getAttribute( 'src' ) );
@@ -699,6 +701,14 @@ class ASAE_CI_Parser {
 	 *
 	 * Returns the DOMNode or null if none found.
 	 *
+	 * Priority order is designed to prefer the most semantically unambiguous
+	 * signals first. In particular, role="main" and itemprop="articleBody"
+	 * outrank the bare <article> element, which CMS templates sometimes use
+	 * for non-content blocks such as author bio cards.  Likewise, role="main"
+	 * is tried before //main because some pages include multiple <main>
+	 * elements (e.g. one inside a navigation mega-menu) and the ARIA role is
+	 * the clearest signal for the true content container.
+	 *
 	 * @param DOMDocument $dom   Parsed DOM.
 	 * @param DOMXPath    $xpath XPath evaluator.
 	 * @return DOMNode|null
@@ -706,16 +716,17 @@ class ASAE_CI_Parser {
 	private static function find_content_node( DOMDocument $dom, DOMXPath $xpath ): ?DOMNode {
 		// Priority list of content container XPath expressions.
 		$candidates = [
-			'//article',
-			'//*[@role="article"]',
 			'//*[@itemprop="articleBody"]',
-			'//main',
 			'//*[@role="main"]',
 			'//*[contains(@class,"article-body")]',
 			'//*[contains(@class,"entry-content")]',
 			'//*[contains(@class,"post-content")]',
 			'//*[contains(@class,"content-body")]',
 			'//*[contains(@class,"story-body")]',
+			'//*[contains(@class,"rich-text")]',
+			'//article',
+			'//*[@role="article"]',
+			'//main',
 		];
 
 		foreach ( $candidates as $expr ) {
@@ -777,6 +788,8 @@ class ASAE_CI_Parser {
 		// XPath expressions for elements that must not appear in post content.
 		// Author bio blocks are stripped here; their text has already been
 		// captured by extract_author_context() for storage in user meta.
+		// Comments and ad containers are stripped unconditionally because
+		// they carry no article content and would pollute the post body.
 		$removal_xpaths = [
 			'//script',
 			'//style',
@@ -785,10 +798,25 @@ class ASAE_CI_Parser {
 			'//footer',
 			'//aside',
 			'//form',
+			// Author attribution blocks (data captured separately to user meta).
 			'//*[contains(@class,"author-block")]',
 			'//*[contains(@class,"author-info")]',
 			'//*[contains(@class,"author-card")]',
 			'//*[contains(@class,"author-bio")]',
+			// Comment systems.
+			'//*[@id="disqus_thread"]',
+			'//*[contains(@class,"disqus")]',
+			'//*[contains(@class,"comments-area")]',
+			'//*[contains(@class,"comment-section")]',
+			// Advertisement containers (Google DFP / GPT and generic).
+			'//*[contains(@id,"div-gpt-ad")]',
+			'//*[contains(@class,"advertisement")]',
+			'//*[contains(@class,"leaderboard")]',
+			'//*[contains(@class,"sharedaddy")]',
+			// "Read These Next" / related-post link lists embedded in articles.
+			'//*[contains(@class,"link-list")]',
+			'//*[contains(@class,"related-posts")]',
+			'//*[contains(@class,"jp-relatedposts")]',
 		];
 
 		foreach ( $removal_xpaths as $expr ) {
