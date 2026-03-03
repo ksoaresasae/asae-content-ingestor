@@ -70,7 +70,7 @@ class ASAE_CI_Parser {
 		// Initialise a silent DOMDocument for the full page.
 		$dom = new DOMDocument();
 		libxml_use_internal_errors( true );
-		$dom->loadHTML( '<?xml encoding="UTF-8">' . $html, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD );
+		$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
 		libxml_clear_errors();
 
 		$xpath = new DOMXPath( $dom );
