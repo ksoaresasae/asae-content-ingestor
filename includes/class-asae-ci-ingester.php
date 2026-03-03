@@ -135,20 +135,10 @@ class ASAE_CI_Ingester {
 			self::assign_tags( $post_id, $tags, $post_type );
 		}
 
-		// Assign one WP category by matching tags then title against existing terms.
-		$has_category = self::assign_category( $post_id, $tags, $title, $post_type );
-		if ( ! $has_category ) {
-			// No category match – publish as draft and flag for admin review.
-			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'draft' ] );
-			update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
-			return new WP_Error(
-				'asae_ci_needs_category',
-				'No matching category found; post saved as draft.',
-				[ 'post_id' => $post_id ]
-			);
-		}
-
 		// Download and replace inline images in the post content.
+		// Images are processed here — before the category check — so that
+		// posts saved as drafts (pending category review) still get their
+		// images imported and their content src attributes updated.
 		$updated_content = self::process_inline_images( $post_id, $content, $parsed_data['inline_images'] ?? [] );
 		if ( $updated_content !== $content ) {
 			wp_update_post( [
@@ -164,6 +154,20 @@ class ASAE_CI_Ingester {
 			if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
 				set_post_thumbnail( $post_id, $attachment_id );
 			}
+		}
+
+		// Assign one WP category by matching tags then title against existing terms.
+		// Category check runs after images so drafts have complete media attached.
+		$has_category = self::assign_category( $post_id, $tags, $title, $post_type );
+		if ( ! $has_category ) {
+			// No category match – publish as draft and flag for admin review.
+			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'draft' ] );
+			update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
+			return new WP_Error(
+				'asae_ci_needs_category',
+				'No matching category found; post saved as draft.',
+				[ 'post_id' => $post_id ]
+			);
 		}
 
 		return $post_id;
@@ -291,6 +295,16 @@ class ASAE_CI_Ingester {
 			return new WP_Error( 'asae_ci_no_image', 'No image URL provided.' );
 		}
 
+		// Deduplicate images within a single ingestion run.
+		// The same image is sometimes referenced with different query strings
+		// (e.g. ?h=440&w=780 vs ?h=200&w=200) — normalise to the base URL so
+		// we download each unique image file only once per request lifecycle.
+		static $url_cache = [];
+		$base_url = strtok( $image_url, '?#' );
+		if ( isset( $url_cache[ $base_url ] ) ) {
+			return $url_cache[ $base_url ];
+		}
+
 		// Load the WP media-handling functions if not already available.
 		if ( ! function_exists( 'media_handle_sideload' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -336,6 +350,10 @@ class ASAE_CI_Ingester {
 		if ( is_wp_error( $attachment_id ) ) {
 			@unlink( $tmp );
 		}
+
+		// Cache the result (success or error) so subsequent calls with the
+		// same base URL return immediately without re-downloading.
+		$url_cache[ $base_url ] = $attachment_id;
 
 		return $attachment_id;
 	}
