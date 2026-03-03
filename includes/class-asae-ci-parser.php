@@ -254,6 +254,39 @@ class ASAE_CI_Parser {
 			}
 		}
 
+		// 5. Non-standard <date> element (plain text content).
+		// Used by some CMS platforms (e.g. ASAE) that render the publication
+		// date as <date>February 26, 2026</date> without a machine-readable
+		// attribute. PHP's strtotime() handles natural-language date strings.
+		$date_el = $xpath->query( '//date' );
+		if ( $date_el && $date_el->length > 0 ) {
+			foreach ( $date_el as $el ) {
+				$val = trim( $el->textContent );
+				if ( $val ) {
+					$ts = strtotime( $val );
+					if ( $ts ) {
+						return gmdate( 'Y-m-d H:i:s', $ts );
+					}
+				}
+			}
+		}
+
+		// 6. <time> element without a datetime attribute (text content fallback).
+		// Handles sites that use <time> as a semantic wrapper but omit the
+		// machine-readable datetime attribute.
+		$time_text = $xpath->query( '//time[not(@datetime)]' );
+		if ( $time_text && $time_text->length > 0 ) {
+			foreach ( $time_text as $el ) {
+				$val = trim( $el->textContent );
+				if ( $val ) {
+					$ts = strtotime( $val );
+					if ( $ts ) {
+						return gmdate( 'Y-m-d H:i:s', $ts );
+					}
+				}
+			}
+		}
+
 		return '';
 	}
 
