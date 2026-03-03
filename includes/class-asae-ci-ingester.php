@@ -307,6 +307,23 @@ class ASAE_CI_Ingester {
 		// Determine file name from the URL.
 		$filename = basename( parse_url( $image_url, PHP_URL_PATH ) ) ?: 'image';
 
+		// Some CMSes (e.g. Sitecore, ASP.NET) serve images through handler
+		// scripts (.ashx, .aspx) that have no image file extension.
+		// WP's media_handle_sideload() relies on the extension to confirm
+		// the MIME type; without it the sideload will fail or be rejected.
+		// Detect the real type from the downloaded bytes and rename accordingly.
+		if ( ! preg_match( '/\.(jpe?g|png|gif|webp|avif|svg)$/i', $filename ) ) {
+			$detected_mime = is_callable( 'mime_content_type' ) ? (string) mime_content_type( $tmp ) : '';
+			$ext           = self::mime_to_extension( $detected_mime );
+			if ( $ext ) {
+				$base     = preg_replace( '/\.[^.]+$/', '', $filename );
+				$filename = $base . '.' . $ext;
+				$new_tmp  = $tmp . '.' . $ext;
+				rename( $tmp, $new_tmp );
+				$tmp = $new_tmp;
+			}
+		}
+
 		$file_array = [
 			'name'     => sanitize_file_name( $filename ),
 			'tmp_name' => $tmp,
@@ -321,6 +338,28 @@ class ASAE_CI_Ingester {
 		}
 
 		return $attachment_id;
+	}
+
+	/**
+	 * Maps a MIME type string to a file extension for common image types.
+	 *
+	 * Used when a downloaded image URL has no standard extension (e.g. .ashx
+	 * script handlers) so that the file can be renamed before sideloading.
+	 *
+	 * @param string $mime_type MIME type, possibly with parameters (e.g. "image/jpeg; charset=...").
+	 * @return string Extension without leading dot (e.g. "jpg"), or empty string if unrecognised.
+	 */
+	private static function mime_to_extension( string $mime_type ): string {
+		$base = strtolower( trim( explode( ';', $mime_type )[0] ) );
+		$map  = [
+			'image/jpeg'    => 'jpg',
+			'image/png'     => 'png',
+			'image/gif'     => 'gif',
+			'image/webp'    => 'webp',
+			'image/avif'    => 'avif',
+			'image/svg+xml' => 'svg',
+		];
+		return $map[ $base ] ?? '';
 	}
 
 	// ── Taxonomy / Tag Handling ───────────────────────────────────────────────

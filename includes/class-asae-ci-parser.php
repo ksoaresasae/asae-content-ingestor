@@ -807,6 +807,10 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"author-info")]',
 			'//*[contains(@class,"author-card")]',
 			'//*[contains(@class,"author-bio")]',
+			// <noscript> fallback blocks — always browser/JS chrome, never article content.
+			// This catches Disqus "Please enable JavaScript" notices and similar
+			// embedded service fallbacks that appear as siblings of their script tags.
+			'//noscript',
 			// Comment systems.
 			'//*[@id="disqus_thread"]',
 			'//*[contains(@class,"disqus")]',
@@ -821,6 +825,9 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"link-list")]',
 			'//*[contains(@class,"related-posts")]',
 			'//*[contains(@class,"jp-relatedposts")]',
+			// Inline tag/taxonomy display blocks — data already captured by
+			// extract_taxonomies() and stored as WP tags; redundant in body.
+			'//*[contains(@class,"tags")]',
 		];
 
 		foreach ( $removal_xpaths as $expr ) {
