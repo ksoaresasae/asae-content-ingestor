@@ -581,10 +581,18 @@ class ASAE_CI_Parser {
 			}
 		}
 
-		// 4. First <img> inside <article> or <figure>.
-		$article_imgs = $xpath->query( '(//article//img | //figure//img)[1]' );
-		if ( $article_imgs && $article_imgs->length > 0 ) {
-			$src = trim( $article_imgs->item(0)->getAttribute( 'src' ) );
+		// 4. First <img> inside known content containers (mirrors find_content_node candidates).
+		$content_imgs = $xpath->query(
+			'(//article//img | //figure//img
+			| //*[@itemprop="articleBody"]//img
+			| //*[contains(@class,"article-body")]//img
+			| //*[contains(@class,"entry-content")]//img
+			| //*[contains(@class,"post-content")]//img
+			| //*[contains(@class,"content-body")]//img
+			| //*[contains(@class,"story-body")]//img)[1]'
+		);
+		if ( $content_imgs && $content_imgs->length > 0 ) {
+			$src = trim( $content_imgs->item(0)->getAttribute( 'src' ) );
 			if ( $src ) {
 				return self::resolve_image_url( $src, $page_url );
 			}
@@ -640,8 +648,8 @@ class ASAE_CI_Parser {
 	 *
 	 * - Embeds (<iframe>, <video>, <embed>, <object>) are preserved verbatim.
 	 * - Relative image src attributes are resolved to absolute URLs.
-	 * - Script tags and style blocks are stripped to keep the content clean.
-	 * - Navigation, header, and footer elements inside the container are removed.
+	 * - Script, style, and chrome elements are stripped.
+	 * - Inline author bio blocks are stripped (extracted separately to user meta).
 	 *
 	 * @param DOMNode     $node     The content container node.
 	 * @param DOMDocument $dom      The owning document (needed for saveHTML).
@@ -649,35 +657,44 @@ class ASAE_CI_Parser {
 	 * @return string Cleaned HTML string.
 	 */
 	private static function extract_body_html( DOMNode $node, DOMDocument $dom, string $page_url ): string {
-		// Remove elements that shouldn't be in the content body.
-		$removal_tags = [ 'script', 'style', 'nav', 'header', 'footer', 'aside', 'form' ];
-		foreach ( $removal_tags as $tag ) {
-			$to_remove = [];
-			foreach ( $node->childNodes as $child ) {
-				if ( $child->nodeName === $tag ) {
-					$to_remove[] = $child;
-				}
-			}
-			// Also search deeper.
-			$child_nodes = $node->ownerDocument ? $node->ownerDocument->getElementsByTagName( $tag ) : [];
-			// Remove collected nodes outside the loop to avoid modifying during iteration.
+		// Serialise the content node to HTML once, then re-parse in isolation so
+		// any saveHTML quirks with LIBXML_HTML_NOIMPLIED are sidestepped.
+		$html_fragment = $dom->saveHTML( $node );
+		if ( empty( trim( $html_fragment ) ) ) {
+			return '';
 		}
 
-		// Clone the node so we don't modify the original DOM.
-		$clone = $node->cloneNode( true );
+		// Load into a fresh document inside a known wrapper so we can reliably
+		// retrieve innerHTML without the html/head/body envelope.
+		$work = new DOMDocument();
+		libxml_use_internal_errors( true );
+		$work->loadHTML( '<?xml encoding="UTF-8"><div id="asae-ci-wrap">' . $html_fragment . '</div>' );
+		libxml_clear_errors();
 
-		// Remove unwanted tags from the clone.
-		foreach ( $removal_tags as $tag ) {
-			$clone_dom = new DOMDocument();
-			libxml_use_internal_errors( true );
-			$clone_dom->loadHTML( '<?xml encoding="UTF-8"><div>' . $dom->saveHTML( $clone ) . '</div>' );
-			libxml_clear_errors();
-			$clone_xpath = new DOMXPath( $clone_dom );
+		$work_xpath = new DOMXPath( $work );
 
-			$unwanted = $clone_xpath->query( '//' . $tag );
+		// XPath expressions for elements that must not appear in post content.
+		// Author bio blocks are stripped here; their text has already been
+		// captured by extract_author_context() for storage in user meta.
+		$removal_xpaths = [
+			'//script',
+			'//style',
+			'//nav',
+			'//header',
+			'//footer',
+			'//aside',
+			'//form',
+			'//*[contains(@class,"author-block")]',
+			'//*[contains(@class,"author-info")]',
+			'//*[contains(@class,"author-card")]',
+			'//*[contains(@class,"author-bio")]',
+		];
+
+		foreach ( $removal_xpaths as $expr ) {
 			$nodes_to_remove = [];
-			if ( $unwanted ) {
-				foreach ( $unwanted as $n ) {
+			$found = $work_xpath->query( $expr );
+			if ( $found ) {
+				foreach ( $found as $n ) {
 					$nodes_to_remove[] = $n;
 				}
 			}
@@ -686,36 +703,33 @@ class ASAE_CI_Parser {
 					$n->parentNode->removeChild( $n );
 				}
 			}
+		}
 
-			// Resolve relative image src attributes.
-			$imgs = $clone_dom->getElementsByTagName( 'img' );
-			foreach ( $imgs as $img ) {
-				$src = $img->getAttribute( 'src' );
-				if ( $src && ! preg_match( '/^https?:\/\//i', $src ) ) {
-					$img->setAttribute( 'src', self::resolve_image_url( $src, $page_url ) );
-				}
-				// Also fix srcset.
-				$srcset = $img->getAttribute( 'srcset' );
-				if ( $srcset ) {
-					$img->setAttribute( 'srcset', self::resolve_srcset( $srcset, $page_url ) );
-				}
+		// Resolve relative image src and srcset attributes.
+		$imgs = $work->getElementsByTagName( 'img' );
+		foreach ( $imgs as $img ) {
+			$src = $img->getAttribute( 'src' );
+			if ( $src && ! preg_match( '/^https?:\/\//i', $src ) ) {
+				$img->setAttribute( 'src', self::resolve_image_url( $src, $page_url ) );
 			}
-
-			// Return from this final iteration.
-			if ( 'form' === $tag ) {
-				// Get innerHTML of the wrapper div.
-				$wrapper = $clone_dom->getElementsByTagName( 'div' )->item(0);
-				if ( $wrapper ) {
-					$inner = '';
-					foreach ( $wrapper->childNodes as $child ) {
-						$inner .= $clone_dom->saveHTML( $child );
-					}
-					return trim( $inner );
-				}
+			$srcset = $img->getAttribute( 'srcset' );
+			if ( $srcset ) {
+				$img->setAttribute( 'srcset', self::resolve_srcset( $srcset, $page_url ) );
 			}
 		}
 
-		return trim( $dom->saveHTML( $node ) );
+		// Return innerHTML of the wrapper div (excludes the wrapper tag itself).
+		$wrappers = $work_xpath->query( '//div[@id="asae-ci-wrap"]' );
+		if ( ! $wrappers || ! $wrappers->length ) {
+			return '';
+		}
+		$wrapper = $wrappers->item(0);
+		$inner   = '';
+		foreach ( $wrapper->childNodes as $child ) {
+			$inner .= $work->saveHTML( $child );
+		}
+
+		return trim( $inner );
 	}
 
 	// ── Inline Image URL Extraction ───────────────────────────────────────────
