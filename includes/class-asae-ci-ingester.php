@@ -482,9 +482,11 @@ class ASAE_CI_Ingester {
 	 * Finds or creates a WordPress subscriber user for the given author.
 	 *
 	 * Deduplication strategy (in priority order):
-	 *  1. user_login match: 'asae-ci-' + sanitize_title($name) (deterministic slug).
-	 *  2. _asae_ci_author_name user-meta match (fallback for edge cases).
-	 *  3. Create a new subscriber user if neither check finds a match.
+	 *  1. user_login match: 'asae-' + sanitize_title($name) — current format.
+	 *  2. user_login match: 'asae-{last}-{first}' — pre-v0.3.6 reversed format.
+	 *  3. user_login match: 'asae-ci-' + sanitize_title($name) — pre-v0.3.4 format.
+	 *  4. _asae_ci_author_name user-meta match (catch-all fallback).
+	 *  5. Create a new subscriber user if no match is found.
 	 *
 	 * After creating a new user, the method optionally:
 	 *  - Fetches the author's bio page (one HTTP request max) for additional data.
@@ -504,23 +506,31 @@ class ASAE_CI_Ingester {
 			return 0;
 		}
 
-		// Build the login slug: asae-{lastname}-{firstname}.
+		// Build the login slug: asae-{full-name-in-display-order}.
+		// Using the full name in its natural order avoids incorrectly treating
+		// professional designations (CAE, FASAE, PhD, etc.) as last names.
+		$login      = 'asae-' . sanitize_title( $name );
 		$name_parts = self::parse_name_parts( $name );
 		$first      = $name_parts['first'];
 		$last       = $name_parts['last'];
-		$slug_parts = array_filter( [ sanitize_title( $last ), sanitize_title( $first ) ] );
-		$login      = 'asae-' . ( ! empty( $slug_parts ) ? implode( '-', $slug_parts ) : sanitize_title( $name ) );
 
-		// 1. Check by new slug format.
+		// 1. Check by current slug format.
 		$user = get_user_by( 'login', $login );
 
-		// 2. Backward-compat: check old slug format (pre-v0.3.4 users).
+		// 2. Backward-compat: check reversed slug format (pre-v0.3.6 users).
+		if ( ! $user ) {
+			$slug_parts    = array_filter( [ sanitize_title( $last ), sanitize_title( $first ) ] );
+			$reversed_login = 'asae-' . ( ! empty( $slug_parts ) ? implode( '-', $slug_parts ) : sanitize_title( $name ) );
+			$user           = get_user_by( 'login', $reversed_login );
+		}
+
+		// 3. Backward-compat: check oldest slug format (pre-v0.3.4 users).
 		if ( ! $user ) {
 			$old_login = 'asae-ci-' . sanitize_title( $name );
 			$user      = get_user_by( 'login', $old_login );
 		}
 
-		// 3. Fall back to meta-based lookup.
+		// 4. Fall back to meta-based lookup.
 		if ( ! $user ) {
 			$found = get_users( [
 				'meta_key'   => '_asae_ci_author_name',
@@ -532,7 +542,7 @@ class ASAE_CI_Ingester {
 			}
 		}
 
-		// 4. Create a new subscriber user.
+		// 5. Create a new subscriber user.
 		if ( ! $user ) {
 			$user_id = wp_insert_user( [
 				'user_login'   => $login,
