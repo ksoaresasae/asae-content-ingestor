@@ -35,11 +35,14 @@ class ASAE_CI_Ingester {
 	/**
 	 * Ingests a single parsed article into WordPress.
 	 *
-	 * @param array  $parsed_data Parsed article data from ASAE_CI_Parser::parse().
-	 * @param string $post_type   The WP post type to create (e.g. 'post').
-	 * @return int|WP_Error New post ID on success, or WP_Error on failure.
+	 * @param array    $parsed_data Parsed article data from ASAE_CI_Parser::parse().
+	 * @param string   $post_type   The WP post type to create (e.g. 'post').
+	 * @param string[] $extra_tags  Additional tag names to apply to every item in this batch.
+	 * @return int|WP_Error New post ID on success, WP_Error('asae_ci_needs_category') if the
+	 *                       post was created as a draft awaiting manual category assignment,
+	 *                       or another WP_Error on failure.
 	 */
-	public static function ingest( array $parsed_data, string $post_type = 'post' ) {
+	public static function ingest( array $parsed_data, string $post_type = 'post', array $extra_tags = [] ) {
 		$source_url = $parsed_data['source_url'] ?? '';
 
 		if ( empty( $source_url ) ) {
@@ -98,10 +101,27 @@ class ASAE_CI_Ingester {
 		// Store the source URL as post meta (primary deduplication marker).
 		update_post_meta( $post_id, self::SOURCE_URL_META, esc_url_raw( $source_url ) );
 
+		// Merge batch-level extra tags with article tags, deduplicating.
+		$tags = array_values( array_unique( array_filter(
+			array_merge( $parsed_data['tags'] ?? [], $extra_tags )
+		) ) );
+
 		// Assign tags (all taxonomy values map to WP Tags per requirements).
-		$tags = $parsed_data['tags'] ?? [];
 		if ( ! empty( $tags ) ) {
 			self::assign_tags( $post_id, $tags, $post_type );
+		}
+
+		// Assign one WP category by matching tags then title against existing terms.
+		$has_category = self::assign_category( $post_id, $tags, $title, $post_type );
+		if ( ! $has_category ) {
+			// No category match – publish as draft and flag for admin review.
+			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'draft' ] );
+			update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
+			return new WP_Error(
+				'asae_ci_needs_category',
+				'No matching category found; post saved as draft.',
+				[ 'post_id' => $post_id ]
+			);
 		}
 
 		// Download and replace inline images in the post content.
@@ -129,24 +149,35 @@ class ASAE_CI_Ingester {
 	 * Performs a dry-run parse: returns the parsed data without creating any posts.
 	 * Used in Dry Run mode to preview what would be ingested.
 	 *
-	 * @param array $parsed_data Parsed article data from ASAE_CI_Parser::parse().
-	 * @param string $post_type  The post type that would be used.
+	 * @param array    $parsed_data Parsed article data from ASAE_CI_Parser::parse().
+	 * @param string   $post_type   The post type that would be used.
+	 * @param string[] $extra_tags  Batch-level additional tags.
 	 * @return array Dry-run result summary.
 	 */
-	public static function dry_run_preview( array $parsed_data, string $post_type = 'post' ): array {
+	public static function dry_run_preview( array $parsed_data, string $post_type = 'post', array $extra_tags = [] ): array {
 		$source_url   = $parsed_data['source_url'] ?? '';
 		$is_duplicate = $source_url ? self::is_duplicate( $source_url ) : false;
+		$title        = sanitize_text_field( $parsed_data['title'] ?? '(Untitled)' );
+
+		// Merge batch-level extra tags.
+		$tags = array_values( array_unique( array_filter(
+			array_merge( $parsed_data['tags'] ?? [], $extra_tags )
+		) ) );
+
+		// Preview which category would be matched (read-only – no post exists yet).
+		$matched_category = self::find_category_match( $tags, $title, $post_type );
 
 		return [
-			'source_url'     => $source_url,
-			'post_title'     => sanitize_text_field( $parsed_data['title'] ?? '(Untitled)' ),
-			'post_type'      => $post_type,
-			'author'         => sanitize_text_field( $parsed_data['author'] ?? '' ),
-			'date'           => $parsed_data['date'] ?? '',
-			'tags'           => $parsed_data['tags'] ?? [],
-			'has_featured'   => ! empty( $parsed_data['featured_image'] ),
-			'inline_images'  => count( $parsed_data['inline_images'] ?? [] ),
-			'is_duplicate'   => $is_duplicate,
+			'source_url'       => $source_url,
+			'post_title'       => $title,
+			'post_type'        => $post_type,
+			'author'           => sanitize_text_field( $parsed_data['author'] ?? '' ),
+			'date'             => $parsed_data['date'] ?? '',
+			'tags'             => $tags,
+			'has_featured'     => ! empty( $parsed_data['featured_image'] ),
+			'inline_images'    => count( $parsed_data['inline_images'] ?? [] ),
+			'is_duplicate'     => $is_duplicate,
+			'category_match'   => $matched_category,
 		];
 	}
 
@@ -305,6 +336,100 @@ class ASAE_CI_Ingester {
 
 		// wp_set_post_tags accepts label strings and creates tags as needed.
 		wp_set_post_tags( $post_id, $sanitised, false );
+	}
+
+	// ── Category Handling ─────────────────────────────────────────────────────
+
+	/**
+	 * Attempts to assign one existing WP category term to a post.
+	 *
+	 * Matching order:
+	 *  1. Case-insensitive comparison of each tag name against all category term names.
+	 *  2. Case-insensitive comparison of title words (≥4 chars) against category term names.
+	 *
+	 * @param int      $post_id   The post to assign a category to.
+	 * @param string[] $tags      Merged tag list (article tags + extra_tags).
+	 * @param string   $title     Article title used as keyword fallback.
+	 * @param string   $post_type Post type (used to identify the correct taxonomy).
+	 * @return bool True if a category was matched and assigned; false if no match.
+	 */
+	private static function assign_category( int $post_id, array $tags, string $title, string $post_type ): bool {
+		$match = self::find_category_match( $tags, $title, $post_type );
+		if ( null === $match ) {
+			return false;
+		}
+
+		$tax = self::get_category_taxonomy( $post_type );
+		wp_set_object_terms( $post_id, [ (int) $match['term_id'] ], $tax, false );
+		return true;
+	}
+
+	/**
+	 * Finds the best-matching category term for a post without assigning it.
+	 * Used by both ingest() (via assign_category) and dry_run_preview() for previews.
+	 *
+	 * @param string[] $tags      Merged tag list.
+	 * @param string   $title     Article title for keyword fallback.
+	 * @param string   $post_type Post type.
+	 * @return array|null {term_id: int, name: string} or null if no match.
+	 */
+	private static function find_category_match( array $tags, string $title, string $post_type ): ?array {
+		$tax = self::get_category_taxonomy( $post_type );
+		if ( ! $tax ) {
+			return null;
+		}
+
+		$terms = get_terms( [ 'taxonomy' => $tax, 'hide_empty' => false ] );
+		if ( is_wp_error( $terms ) || empty( $terms ) ) {
+			return null;
+		}
+
+		// Build a lookup map: lowercase_name → term.
+		$term_map = [];
+		foreach ( $terms as $term ) {
+			$term_map[ strtolower( $term->name ) ] = $term;
+		}
+
+		// Pass 1: tag-name match.
+		foreach ( $tags as $tag ) {
+			$key = strtolower( trim( $tag ) );
+			if ( isset( $term_map[ $key ] ) ) {
+				$t = $term_map[ $key ];
+				return [ 'term_id' => (int) $t->term_id, 'name' => $t->name ];
+			}
+		}
+
+		// Pass 2: title keyword match (words ≥ 4 characters).
+		$words = preg_split( '/\s+/', $title, -1, PREG_SPLIT_NO_EMPTY );
+		foreach ( $words as $word ) {
+			$clean = strtolower( preg_replace( '/[^a-z0-9]/i', '', $word ) );
+			if ( strlen( $clean ) >= 4 && isset( $term_map[ $clean ] ) ) {
+				$t = $term_map[ $clean ];
+				return [ 'term_id' => (int) $t->term_id, 'name' => $t->name ];
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Returns the name of the hierarchical (category-style) taxonomy registered
+	 * for the given post type.
+	 *
+	 * @param string $post_type Post type slug.
+	 * @return string Taxonomy name, or '' if none found.
+	 */
+	private static function get_category_taxonomy( string $post_type ): string {
+		if ( 'post' === $post_type ) {
+			return 'category';
+		}
+		$taxonomies = get_object_taxonomies( $post_type, 'objects' );
+		foreach ( $taxonomies as $tax ) {
+			if ( $tax->hierarchical ) {
+				return $tax->name;
+			}
+		}
+		return '';
 	}
 
 	// ── Author Handling ───────────────────────────────────────────────────────
@@ -503,7 +628,7 @@ class ASAE_CI_Ingester {
 	 *
 	 * @return bool True if Co-Authors Plus is usable.
 	 */
-	private static function cap_is_active(): bool {
+	public static function cap_is_active(): bool {
 		global $coauthors_plus;
 		return ! empty( $coauthors_plus )
 			&& is_object( $coauthors_plus )

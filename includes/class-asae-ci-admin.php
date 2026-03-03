@@ -46,10 +46,12 @@ class ASAE_CI_Admin {
 		add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_assets' ] );
 
 		// AJAX – logged-in admin users only.
-		add_action( 'wp_ajax_asae_ci_start_job',       [ __CLASS__, 'ajax_start_job' ] );
-		add_action( 'wp_ajax_asae_ci_process_batch',   [ __CLASS__, 'ajax_process_batch' ] );
-		add_action( 'wp_ajax_asae_ci_get_progress',    [ __CLASS__, 'ajax_get_progress' ] );
-		add_action( 'wp_ajax_asae_ci_delete_report',   [ __CLASS__, 'ajax_delete_report' ] );
+		add_action( 'wp_ajax_asae_ci_start_job',          [ __CLASS__, 'ajax_start_job' ] );
+		add_action( 'wp_ajax_asae_ci_process_batch',      [ __CLASS__, 'ajax_process_batch' ] );
+		add_action( 'wp_ajax_asae_ci_get_progress',       [ __CLASS__, 'ajax_get_progress' ] );
+		add_action( 'wp_ajax_asae_ci_delete_report',      [ __CLASS__, 'ajax_delete_report' ] );
+		add_action( 'wp_ajax_asae_ci_dismiss_cap_notice', [ __CLASS__, 'ajax_dismiss_cap_notice' ] );
+		add_action( 'wp_ajax_asae_ci_apply_categories',   [ __CLASS__, 'ajax_apply_categories' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -121,6 +123,7 @@ class ASAE_CI_Admin {
 				'ingesting'      => __( 'Ingesting content…', 'asae-content-ingestor' ),
 				'dryRunning'     => __( 'Running dry preview…', 'asae-content-ingestor' ),
 				'completed'      => __( 'Completed.', 'asae-content-ingestor' ),
+				'needsReview'    => __( 'Category review required.', 'asae-content-ingestor' ),
 				'failed'         => __( 'An error occurred.', 'asae-content-ingestor' ),
 				'confirmDelete'  => __( 'Delete this report? This cannot be undone.', 'asae-content-ingestor' ),
 			],
@@ -142,6 +145,8 @@ class ASAE_CI_Admin {
 		if ( file_exists( $view ) ) {
 			// Make plugin data available to the view template.
 			$post_types = self::get_eligible_post_types();
+			$cap_active = ASAE_CI_Ingester::cap_is_active();
+			$cap_notice_dismissed = (bool) get_transient( 'asae_ci_cap_dismissed_' . get_current_user_id() );
 			include $view;
 		}
 	}
@@ -196,8 +201,9 @@ class ASAE_CI_Admin {
 		$source_url      = esc_url_raw( wp_unslash( $_POST['source_url']      ?? '' ) );
 		$url_restriction = esc_url_raw( wp_unslash( $_POST['url_restriction'] ?? '' ) );
 		$post_type       = sanitize_key( $_POST['post_type']   ?? 'post' );
-		$batch_limit     = sanitize_text_field( $_POST['batch_limit'] ?? '50' );
-		$run_type        = sanitize_text_field( $_POST['run_type']    ?? 'dry' );
+		$batch_limit     = sanitize_text_field( $_POST['batch_limit']      ?? '50' );
+		$run_type        = sanitize_text_field( $_POST['run_type']          ?? 'dry' );
+		$additional_tags = sanitize_text_field( wp_unslash( $_POST['additional_tags'] ?? '' ) );
 
 		if ( empty( $source_url ) ) {
 			wp_send_json_error( [ 'message' => __( 'An RSS feed URL is required.', 'asae-content-ingestor' ) ] );
@@ -219,6 +225,7 @@ class ASAE_CI_Admin {
 			'post_type'       => $post_type,
 			'batch_limit'     => $batch_limit,
 			'run_type'        => $run_type,
+			'additional_tags' => $additional_tags,
 		] );
 
 		if ( is_wp_error( $job_key ) ) {
@@ -319,6 +326,108 @@ class ASAE_CI_Admin {
 		} else {
 			wp_send_json_error( [ 'message' => __( 'Failed to delete report.', 'asae-content-ingestor' ) ] );
 		}
+	}
+
+	/**
+	 * AJAX: Dismisses the Co-Authors Plus missing notice for 30 days for the current user.
+	 * Expects POST params: nonce.
+	 *
+	 * @return void
+	 */
+	public static function ajax_dismiss_cap_notice(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+		set_transient( 'asae_ci_cap_dismissed_' . get_current_user_id(), true, 30 * DAY_IN_SECONDS );
+		wp_send_json_success();
+	}
+
+	/**
+	 * AJAX: Applies manually selected categories to draft posts that had no automatic match.
+	 * On success, publishes the posts and removes them from the pending_review queue.
+	 * If all pending items are resolved the job status is set to 'completed'.
+	 *
+	 * Expects POST params: job_key, assignments (JSON array of {post_id, term_id}), nonce.
+	 *
+	 * @return void
+	 */
+	public static function ajax_apply_categories(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$job_key     = sanitize_text_field( wp_unslash( $_POST['job_key']     ?? '' ) );
+		$assignments = json_decode( wp_unslash( $_POST['assignments'] ?? '[]' ), true );
+
+		if ( empty( $job_key ) || ! is_array( $assignments ) ) {
+			wp_send_json_error( [ 'message' => __( 'Invalid request.', 'asae-content-ingestor' ) ] );
+		}
+
+		$job = ASAE_CI_Scheduler::get_job( $job_key );
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
+		}
+
+		$queue_data     = json_decode( $job['queue_data'], true );
+		$pending_review = $queue_data['pending_review'] ?? [];
+		$post_type      = $job['post_type'] ?? 'post';
+
+		// Determine the category taxonomy for this post type.
+		$tax = 'post' === $post_type ? 'category' : '';
+		if ( ! $tax ) {
+			$taxons = get_object_taxonomies( $post_type, 'objects' );
+			foreach ( $taxons as $t ) {
+				if ( $t->hierarchical ) {
+					$tax = $t->name;
+					break;
+				}
+			}
+		}
+
+		// Apply each assignment: set category, publish the draft, remove from pending list.
+		$resolved_ids = [];
+		foreach ( $assignments as $assignment ) {
+			$post_id = (int) ( $assignment['post_id'] ?? 0 );
+			$term_id = (int) ( $assignment['term_id'] ?? 0 );
+
+			if ( $post_id <= 0 || $term_id <= 0 || ! $tax ) {
+				continue;
+			}
+
+			wp_set_object_terms( $post_id, [ $term_id ], $tax, false );
+			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
+			delete_post_meta( $post_id, '_asae_ci_needs_category' );
+			$resolved_ids[] = $post_id;
+		}
+
+		// Remove resolved items from pending_review.
+		$queue_data['pending_review'] = array_values( array_filter(
+			$pending_review,
+			static function ( $item ) use ( $resolved_ids ) {
+				return ! in_array( (int) $item['post_id'], $resolved_ids, true );
+			}
+		) );
+
+		// If all resolved, mark job as completed.
+		if ( empty( $queue_data['pending_review'] ) ) {
+			ASAE_CI_Scheduler::update_job( $job_key, [
+				'status'     => 'completed',
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
+			if ( $job['report_id'] ) {
+				ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'completed' ] );
+			}
+		} else {
+			ASAE_CI_Scheduler::update_job( $job_key, [
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
+		}
+
+		// Return updated progress snapshot.
+		$updated_job = ASAE_CI_Scheduler::get_job( $job_key );
+		$result      = $updated_job
+			? ASAE_CI_Scheduler::build_progress_response( $updated_job, $queue_data )
+			: [ 'is_complete' => true ];
+
+		wp_send_json_success( $result );
 	}
 
 	// ── Private Helpers ───────────────────────────────────────────────────────

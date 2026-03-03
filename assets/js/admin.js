@@ -47,12 +47,18 @@
 	var $reportLink       = $( '#asae-ci-report-link' );
 	var $dryPanel         = $( '#asae-ci-dry-results-panel' );
 	var $dryTableWrap     = $( '#asae-ci-dry-table-wrap' );
+	var $reviewPanel      = $( '#asae-ci-review-panel' );
+	var $reviewTableWrap  = $( '#asae-ci-review-table-wrap' );
+	var $reviewApplyRow   = $( '#asae-ci-review-apply-row' );
+	var $reviewError      = $( '#asae-ci-review-error' );
+	var $applyBtn         = $( '#asae-ci-apply-categories-btn' );
 
 	// ── State ────────────────────────────────────────────────────────────────
 
-	var currentJobKey  = null;
-	var pollTimer      = null;
-	var isProcessing   = false;
+	var currentJobKey     = null;
+	var pollTimer         = null;
+	var isProcessing      = false;
+	var pendingReviewData = null; // Stored when job enters needs_review state.
 
 	// ── Form Submission ──────────────────────────────────────────────────────
 
@@ -85,6 +91,7 @@
 				nonce           : asaeCi.nonce,
 				source_url      : sourceUrl,
 				url_restriction : $.trim( $( '#asae-ci-url-restriction' ).val() ) || '',
+				additional_tags : $.trim( $( '#asae-ci-additional-tags' ).val() ) || '',
 				post_type       : $( '#asae-ci-post-type' ).val(),
 				batch_limit     : $( 'input[name="batch_limit"]:checked' ).val() || '50',
 				run_type        : $( 'input[name="run_type"]:checked' ).val()    || 'dry',
@@ -151,7 +158,14 @@
 			var data = response.data;
 			updateProgressUI( data );
 
-			if ( data.is_complete ) {
+			if ( data.is_needs_review ) {
+				clearTimeout( pollTimer );
+				updatePhaseLabel( 'needs_review' );
+				setSubmitBusy( false );
+				setProgressBar( $discoveryBar, $discoveryBarWrap, 100 );
+				setProgressBar( $ingestBar, $ingestBarWrap, 100 );
+				onNeedsReview( data );
+			} else if ( data.is_complete ) {
 				onJobComplete( data );
 			} else {
 				// Schedule next batch after a short delay to avoid hammering the server.
@@ -223,10 +237,11 @@
 	 */
 	function updatePhaseLabel( phase ) {
 		var labels = {
-			discovery : asaeCi.strings.discovering,
-			ingestion : asaeCi.strings.ingesting,
-			dry       : asaeCi.strings.dryRunning,
-			completed : asaeCi.strings.completed,
+			discovery    : asaeCi.strings.discovering,
+			ingestion    : asaeCi.strings.ingesting,
+			dry          : asaeCi.strings.dryRunning,
+			completed    : asaeCi.strings.completed,
+			needs_review : asaeCi.strings.needsReview,
 		};
 		$phaseLabel.text( labels[ phase ] || phase );
 	}
@@ -292,6 +307,8 @@
 			var authorText  = item.author || '—';
 			// Show only the date portion (YYYY-MM-DD) when a full datetime is present.
 			var dateText    = item.date ? item.date.replace( /\s.*$/, '' ) : '—';
+			var catText     = item.category_match ? item.category_match : '— (needs review)';
+			var catClass    = item.category_match ? '' : 'asae-ci-status-warning';
 
 			return '<tr>' +
 				'<td class="asae-ci-url-cell"><a href="' + escAttr( item.source_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( item.source_url ) + '</a></td>' +
@@ -299,6 +316,7 @@
 				'<td>' + escHtml( authorText ) + '</td>' +
 				'<td>' + escHtml( dateText ) + '</td>' +
 				'<td>' + escHtml( tagsText ) + '</td>' +
+				'<td><span class="' + ( catClass ? 'asae-ci-status ' + catClass : '' ) + '">' + escHtml( catText ) + '</span></td>' +
 				'<td><span class="asae-ci-status ' + statusClass + '">' + escHtml( statusLabel ) + '</span></td>' +
 				'</tr>';
 		} );
@@ -311,6 +329,7 @@
 			'<th scope="col">Author</th>' +
 			'<th scope="col">Date</th>' +
 			'<th scope="col">Tags</th>' +
+			'<th scope="col">Category</th>' +
 			'<th scope="col">Action</th>' +
 			'</tr></thead>' +
 			'<tbody>' + rows.join( '' ) + '</tbody>' +
@@ -322,6 +341,155 @@
 		// Scroll to the dry results panel.
 		$( 'html, body' ).animate( { scrollTop: $dryPanel.offset().top - 40 }, 400 );
 	}
+
+	// ── Category Review ───────────────────────────────────────────────────────
+
+	/**
+	 * Called when the server reports the job is in 'needs_review' status.
+	 * Stores review data and renders the review panel.
+	 *
+	 * @param {Object} data Progress data containing pending_review and review_categories.
+	 */
+	function onNeedsReview( data ) {
+		pendingReviewData = data;
+		renderCategoryReview( data.pending_review || [], data.review_categories || [] );
+	}
+
+	/**
+	 * Renders the category review table: one row per pending draft post, each
+	 * with a <select> for the admin to choose a category.
+	 *
+	 * @param {Array} items      Pending review items [{post_id, post_title, source_url}].
+	 * @param {Array} categories Available category terms [{term_id, name}].
+	 */
+	function renderCategoryReview( items, categories ) {
+		if ( ! items || ! items.length ) {
+			$reviewPanel.addClass( 'asae-ci-hidden' );
+			return;
+		}
+
+		// Build the "Apply to All" selector.
+		var categoryOptions = '<option value="">— Select a category —</option>';
+		categories.forEach( function ( cat ) {
+			categoryOptions += '<option value="' + escAttr( String( cat.term_id ) ) + '">' +
+				escHtml( cat.name ) + '</option>';
+		} );
+
+		var applyAllId = 'asae-ci-apply-all-cat';
+		var applyAllHtml =
+			'<div style="margin-bottom:0.75em;">' +
+				'<label for="' + applyAllId + '"><strong>Apply to all:</strong></label> ' +
+				'<select id="' + applyAllId + '">' + categoryOptions + '</select>' +
+			'</div>';
+
+		// Build the table rows.
+		var rows = items.map( function ( item, idx ) {
+			var selectId = 'asae-ci-cat-' + idx;
+			return '<tr>' +
+				'<td class="asae-ci-url-cell"><a href="' + escAttr( item.source_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( item.source_url ) + '</a></td>' +
+				'<td>' + escHtml( item.post_title || '(untitled)' ) + '</td>' +
+				'<td>' +
+					'<label for="' + selectId + '" class="screen-reader-text">' + escHtml( 'Category for ' + ( item.post_title || item.source_url ) ) + '</label>' +
+					'<select id="' + selectId + '" data-post-id="' + escAttr( String( item.post_id ) ) + '" class="asae-ci-cat-select">' +
+						categoryOptions +
+					'</select>' +
+				'</td>' +
+				'</tr>';
+		} );
+
+		var tableHtml =
+			applyAllHtml +
+			'<table class="wp-list-table widefat striped">' +
+				'<caption class="screen-reader-text">Items requiring category assignment</caption>' +
+				'<thead><tr>' +
+					'<th scope="col">Source URL</th>' +
+					'<th scope="col">Title</th>' +
+					'<th scope="col">Category</th>' +
+				'</tr></thead>' +
+				'<tbody>' + rows.join( '' ) + '</tbody>' +
+			'</table>';
+
+		$reviewTableWrap.html( tableHtml );
+		$reviewApplyRow.removeClass( 'asae-ci-hidden' );
+		$reviewError.text( '' );
+		$reviewPanel.removeClass( 'asae-ci-hidden' );
+
+		// "Apply to all" propagates the selected category to every row select.
+		$( '#' + applyAllId ).on( 'change', function () {
+			var val = $( this ).val();
+			$( '.asae-ci-cat-select' ).val( val );
+		} );
+
+		// Scroll to review panel.
+		$( 'html, body' ).animate( { scrollTop: $reviewPanel.offset().top - 40 }, 400 );
+	}
+
+	/**
+	 * Handles the "Apply Categories & Publish" button click.
+	 * Collects the admin's selections and sends them to the server.
+	 */
+	$applyBtn.on( 'click', function () {
+		var assignments = [];
+		var allSelected = true;
+
+		$( '.asae-ci-cat-select' ).each( function () {
+			var termId  = $.trim( $( this ).val() );
+			var postId  = $( this ).data( 'post-id' );
+			if ( ! termId ) {
+				allSelected = false;
+			} else {
+				assignments.push( { post_id: postId, term_id: termId } );
+			}
+		} );
+
+		if ( ! allSelected ) {
+			$reviewError.text( 'Please select a category for every item before applying.' );
+			return;
+		}
+		$reviewError.text( '' );
+
+		$applyBtn.prop( 'disabled', true ).text( 'Applying…' );
+
+		$.ajax( {
+			url    : asaeCi.ajaxUrl,
+			method : 'POST',
+			data   : {
+				action      : 'asae_ci_apply_categories',
+				nonce       : asaeCi.nonce,
+				job_key     : currentJobKey,
+				assignments : JSON.stringify( assignments ),
+			},
+		} )
+		.done( function ( response ) {
+			$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+			if ( ! response.success ) {
+				$reviewError.text( response.data && response.data.message ? response.data.message : 'An error occurred.' );
+				return;
+			}
+			var data = response.data;
+			if ( data.is_needs_review ) {
+				// Some items still unresolved (shouldn't happen if all selected, but handle gracefully).
+				onNeedsReview( data );
+			} else if ( data.is_complete ) {
+				$reviewPanel.addClass( 'asae-ci-hidden' );
+				onJobComplete( data );
+			}
+		} )
+		.fail( function () {
+			$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+			$reviewError.text( 'Network error. Please try again.' );
+		} );
+	} );
+
+	// ── Co-Authors Plus Notice Dismiss ────────────────────────────────────────
+
+	$( document ).on( 'click', '#asae-ci-dismiss-cap-notice', function () {
+		$.post( asaeCi.ajaxUrl, {
+			action : 'asae_ci_dismiss_cap_notice',
+			nonce  : asaeCi.nonce,
+		} );
+		$( '#asae-ci-cap-notice' ).slideUp( 300 );
+	} );
 
 	// ── Report Delete (Reports Listing Page) ──────────────────────────────────
 
@@ -384,6 +552,10 @@
 		$progressPanel.removeClass( 'asae-ci-hidden' );
 		$dryPanel.addClass( 'asae-ci-hidden' );
 		$dryTableWrap.html( '' );
+		$reviewPanel.addClass( 'asae-ci-hidden' );
+		$reviewTableWrap.html( '' );
+		$reviewApplyRow.addClass( 'asae-ci-hidden' );
+		$reviewError.text( '' );
 		$completeMsg.addClass( 'asae-ci-hidden' );
 		$reportLink.addClass( 'asae-ci-hidden' );
 		setProgressBar( $discoveryBar, $discoveryBarWrap, 0 );
@@ -392,6 +564,7 @@
 		$foundCount.text( '0' );
 		$processedCount.text( '0' );
 		$failedCount.text( '0' );
+		pendingReviewData = null;
 	}
 
 	/**

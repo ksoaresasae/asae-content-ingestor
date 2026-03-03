@@ -24,6 +24,18 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		<span class="asae-ci-version">v<?php echo esc_html( ASAE_CI_VERSION ); ?></span>
 	</h1>
 
+	<?php if ( ! $cap_active && ! $cap_notice_dismissed ) : ?>
+	<div class="asae-ci-notice asae-ci-notice-warning" id="asae-ci-cap-notice" role="alert">
+		<p>
+			<strong><?php esc_html_e( 'Co-Authors Plus not detected.', 'asae-content-ingestor' ); ?></strong>
+			<?php esc_html_e( 'Author user accounts will still be created, but authors cannot be attributed to posts until Co-Authors Plus is installed and activated on this site.', 'asae-content-ingestor' ); ?>
+		</p>
+		<button type="button" class="button" id="asae-ci-dismiss-cap-notice">
+			<?php esc_html_e( 'Dismiss for 30 days', 'asae-content-ingestor' ); ?>
+		</button>
+	</div>
+	<?php endif; ?>
+
 	<p class="asae-ci-intro">
 		<?php esc_html_e( 'Read an RSS feed and ingest its linked articles into WordPress. Use Dry Run to preview content before committing an Active Run.', 'asae-content-ingestor' ); ?>
 	</p>
@@ -81,6 +93,24 @@ if ( ! current_user_can( 'manage_options' ) ) {
 				/>
 				<p id="asae-ci-restriction-hint" class="description">
 					<?php esc_html_e( 'Only ingest feed links whose URL begins with this prefix. Leave blank to ingest every link in the feed.', 'asae-content-ingestor' ); ?>
+				</p>
+			</div>
+
+			<!-- Additional Tags (Optional) -->
+			<div class="asae-ci-field">
+				<label for="asae-ci-additional-tags">
+					<?php esc_html_e( 'Additional Tags (Optional)', 'asae-content-ingestor' ); ?>
+				</label>
+				<input
+					type="text"
+					id="asae-ci-additional-tags"
+					name="additional_tags"
+					class="regular-text"
+					placeholder="tag1, tag2, tag3"
+					aria-describedby="asae-ci-tags-hint"
+				/>
+				<p id="asae-ci-tags-hint" class="description">
+					<?php esc_html_e( 'Comma-separated tags applied to every item ingested in this run, in addition to each item\'s own extracted tags.', 'asae-content-ingestor' ); ?>
 				</p>
 			</div>
 
@@ -255,6 +285,27 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<!-- Populated dynamically by admin.js -->
 		</div>
 
+	</section>
+
+	<!-- ── Category Review Panel (shown when posts need manual category assignment) -->
+	<section
+		id="asae-ci-review-panel"
+		class="asae-ci-card asae-ci-hidden"
+		aria-labelledby="asae-ci-review-heading"
+	>
+		<h2 id="asae-ci-review-heading"><?php esc_html_e( 'Category Review Required', 'asae-content-ingestor' ); ?></h2>
+		<p class="description">
+			<?php esc_html_e( 'The following items could not be automatically matched to an existing category. Select a category for each item and click Apply to publish them.', 'asae-content-ingestor' ); ?>
+		</p>
+		<div id="asae-ci-review-table-wrap">
+			<!-- Populated dynamically by admin.js -->
+		</div>
+		<div id="asae-ci-review-apply-row" class="asae-ci-hidden" style="margin-top:1em;">
+			<button type="button" id="asae-ci-apply-categories-btn" class="button button-primary">
+				<?php esc_html_e( 'Apply Categories &amp; Publish', 'asae-content-ingestor' ); ?>
+			</button>
+			<span id="asae-ci-review-error" class="asae-ci-error-msg" role="alert" aria-live="assertive"></span>
+		</div>
 	</section>
 
 	<!-- ── Recent Reports Quick Link ─────────────────────────────────────── -->

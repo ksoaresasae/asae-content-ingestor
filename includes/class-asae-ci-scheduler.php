@@ -57,15 +57,19 @@ class ASAE_CI_Scheduler {
 		// feed URLs; batch_limit is enforced during ingestion to find N genuinely new items).
 		$initial_queue = ASAE_CI_Crawler::build_initial_queue( $source_url, 0, $url_restriction );
 
+		$additional_tags = sanitize_text_field( $args['additional_tags'] ?? '' );
+
 		// Initial job queue_data blob.
 		$queue_data = [
-			'discovery'   => $initial_queue,
-			'ingestion'   => [
+			'discovery'       => $initial_queue,
+			'ingestion'       => [
 				'queue'     => [],  // Populated after discovery completes.
 				'processed' => 0,
 				'failed'    => 0,
 			],
-			'dry_results' => [],    // Populated during Dry Run preview.
+			'dry_results'     => [],    // Populated during Dry Run preview.
+			'additional_tags' => $additional_tags, // Batch-level tags applied to every item.
+			'pending_review'  => [],    // Items that need manual category assignment.
 		];
 
 		$now     = current_time( 'mysql' );
@@ -270,11 +274,15 @@ class ASAE_CI_Scheduler {
 	 * @return array Updated queue_data.
 	 */
 	private static function run_ingestion_batch( array $queue_data, array $job ): array {
-		$ingest    = $queue_data['ingestion'] ?? [];
-		$queue     = $ingest['queue']   ?? [];
-		$done      = (int) ( $ingest['processed'] ?? 0 );
-		$failed    = (int) ( $ingest['failed']    ?? 0 );
-		$limit_int = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
+		$ingest         = $queue_data['ingestion']     ?? [];
+		$queue          = $ingest['queue']             ?? [];
+		$done           = (int) ( $ingest['processed'] ?? 0 );
+		$failed         = (int) ( $ingest['failed']    ?? 0 );
+		$pending_review = $queue_data['pending_review'] ?? [];
+		$limit_int      = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
+
+		// Parse batch-level extra tags from the stored comma-separated string.
+		$extra_tags = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
 
 		$count = 0;
 
@@ -305,11 +313,30 @@ class ASAE_CI_Scheduler {
 			// Parse the article.
 			$parsed = ASAE_CI_Parser::parse( $url, $html );
 
-			// Ingest into WordPress.
-			$post_id = ASAE_CI_Ingester::ingest( $parsed, $job['post_type'] );
+			// Ingest into WordPress (passing batch-level extra tags).
+			$post_id = ASAE_CI_Ingester::ingest( $parsed, $job['post_type'], $extra_tags );
 
 			if ( is_wp_error( $post_id ) ) {
-				$status = 'duplicate' === $post_id->get_error_code() ? 'skipped' : 'failed';
+				if ( 'asae_ci_needs_category' === $post_id->get_error_code() ) {
+					// Post created as draft – needs manual category assignment.
+					$pd = $post_id->get_error_data();
+					$pending_review[] = [
+						'post_id'    => (int) $pd['post_id'],
+						'post_title' => sanitize_text_field( $parsed['title'] ?? '' ),
+						'source_url' => $url,
+					];
+					$done++;
+					self::log_report_item( $job, $url, (int) $pd['post_id'], $parsed['tags'] ?? [],
+						'draft', 'Needs category review.',
+						$parsed['title'] ?? '', $parsed['author'] ?? '', $parsed['date'] ?? '' );
+					if ( $limit_int > 0 && $done >= $limit_int ) {
+						$queue = [];
+						break;
+					}
+					continue;
+				}
+
+				$status = 'asae_ci_duplicate' === $post_id->get_error_code() ? 'skipped' : 'failed';
 				self::log_report_item( $job, $url, null, $parsed['tags'] ?? [], $status,
 					$post_id->get_error_message(), $parsed['title'] ?? '',
 					$parsed['author'] ?? '', $parsed['date'] ?? '' );
@@ -329,14 +356,15 @@ class ASAE_CI_Scheduler {
 		}
 
 		// Update queue state.
-		$ingest['queue']     = $queue;
-		$ingest['processed'] = $done;
-		$ingest['failed']    = $failed;
-		$queue_data['ingestion'] = $ingest;
+		$ingest['queue']          = $queue;
+		$ingest['processed']      = $done;
+		$ingest['failed']         = $failed;
+		$queue_data['ingestion']  = $ingest;
+		$queue_data['pending_review'] = $pending_review;
 
 		if ( empty( $queue ) ) {
-			// Ingestion is complete – finalise the job.
-			self::finalise_job( $job, $done, $failed );
+			// All URLs processed – finalise (may enter needs_review if drafts exist).
+			self::finalise_job( $job, $done, $failed, $pending_review );
 		} else {
 			self::update_job( $job['job_key'], [
 				'queue_data' => wp_json_encode( $queue_data ),
@@ -361,6 +389,9 @@ class ASAE_CI_Scheduler {
 		$new_count   = (int) ( $ingest['new_count']   ?? 0 ); // Non-duplicate items so far.
 		$dry_results = $queue_data['dry_results']  ?? [];
 
+		// Parse batch-level extra tags.
+		$extra_tags = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
+
 		$count = 0;
 
 		while ( ! empty( $queue ) && $count < ASAE_CI_INGEST_BATCH_SIZE ) {
@@ -383,9 +414,9 @@ class ASAE_CI_Scheduler {
 				continue;
 			}
 
-			$html   = wp_remote_retrieve_body( $response );
-			$parsed = ASAE_CI_Parser::parse( $url, $html );
-			$preview = ASAE_CI_Ingester::dry_run_preview( $parsed, $job['post_type'] );
+			$html    = wp_remote_retrieve_body( $response );
+			$parsed  = ASAE_CI_Parser::parse( $url, $html );
+			$preview = ASAE_CI_Ingester::dry_run_preview( $parsed, $job['post_type'], $extra_tags );
 
 			$dry_results[] = $preview;
 			$done++;
@@ -475,19 +506,22 @@ class ASAE_CI_Scheduler {
 	}
 
 	/**
-	 * Marks the job as completed and finalises the associated report.
+	 * Marks the job as completed (or needs_review if drafts await category assignment)
+	 * and finalises the associated report.
 	 *
-	 * @param array $job    Job record.
-	 * @param int   $done   Number of successfully ingested items.
-	 * @param int   $failed Number of failed items.
+	 * @param array $job            Job record.
+	 * @param int   $done           Number of items processed (ingested + drafts).
+	 * @param int   $failed         Number of failed items.
+	 * @param array $pending_review Items that were saved as drafts needing category review.
 	 * @return void
 	 */
-	private static function finalise_job( array $job, int $done, int $failed ): void {
-		self::update_job( $job['job_key'], [ 'status' => 'completed' ] );
+	private static function finalise_job( array $job, int $done, int $failed, array $pending_review = [] ): void {
+		$final_status = empty( $pending_review ) ? 'completed' : 'needs_review';
+		self::update_job( $job['job_key'], [ 'status' => $final_status ] );
 
 		if ( $job['report_id'] ) {
 			ASAE_CI_Reports::update_report( (int) $job['report_id'], [
-				'status'          => 'completed',
+				'status'          => $final_status,
 				'total_ingested'  => $done,
 				'total_failed'    => $failed,
 			] );
@@ -537,7 +571,7 @@ class ASAE_CI_Scheduler {
 	 * @param array|null $queue_data Optional fresh queue_data (to avoid re-decoding).
 	 * @return array
 	 */
-	private static function build_progress_response( array $job, ?array $queue_data = null ): array {
+	public static function build_progress_response( array $job, ?array $queue_data = null ): array {
 		if ( null === $queue_data ) {
 			$queue_data = json_decode( $job['queue_data'], true );
 		}
@@ -554,20 +588,49 @@ class ASAE_CI_Scheduler {
 		$processed     = (int) ( $ingest['processed'] ?? 0 );
 		$failed        = (int) ( $ingest['failed']    ?? 0 );
 
+		$pending_review = $queue_data['pending_review'] ?? [];
+
+		// Categories available for review panel (only populated when needs_review).
+		$review_categories = [];
+		if ( 'needs_review' === $job['status'] && ! empty( $pending_review ) ) {
+			$post_type = $job['post_type'] ?? 'post';
+			$tax       = 'post' === $post_type ? 'category' : '';
+			if ( ! $tax ) {
+				$taxons = get_object_taxonomies( $post_type, 'objects' );
+				foreach ( $taxons as $t ) {
+					if ( $t->hierarchical ) {
+						$tax = $t->name;
+						break;
+					}
+				}
+			}
+			if ( $tax ) {
+				$terms = get_terms( [ 'taxonomy' => $tax, 'hide_empty' => false ] );
+				if ( ! is_wp_error( $terms ) ) {
+					foreach ( $terms as $term ) {
+						$review_categories[] = [ 'term_id' => $term->term_id, 'name' => $term->name ];
+					}
+				}
+			}
+		}
+
 		return [
-			'job_key'         => $job['job_key'],
-			'status'          => $job['status'],
-			'phase'           => $job['phase'],
-			'run_type'        => $job['run_type'],
-			'report_id'       => $job['report_id'],
-			'crawled'         => $feed_fetched ? 1 : 0,
-			'to_crawl'        => $feed_fetched ? 0 : 1,
-			'content_found'   => $content_found,
-			'queue_remaining' => $queue_count,
-			'processed'       => $processed,
-			'failed'          => $failed,
-			'dry_results'     => 'dry' === $job['run_type'] ? $dry_res : [],
-			'is_complete'     => 'completed' === $job['status'] || 'failed' === $job['status'],
+			'job_key'           => $job['job_key'],
+			'status'            => $job['status'],
+			'phase'             => $job['phase'],
+			'run_type'          => $job['run_type'],
+			'report_id'         => $job['report_id'],
+			'crawled'           => $feed_fetched ? 1 : 0,
+			'to_crawl'          => $feed_fetched ? 0 : 1,
+			'content_found'     => $content_found,
+			'queue_remaining'   => $queue_count,
+			'processed'         => $processed,
+			'failed'            => $failed,
+			'dry_results'       => 'dry' === $job['run_type'] ? $dry_res : [],
+			'pending_review'    => $pending_review,
+			'review_categories' => $review_categories,
+			'is_needs_review'   => 'needs_review' === $job['status'],
+			'is_complete'       => 'completed' === $job['status'] || 'failed' === $job['status'],
 		];
 	}
 
