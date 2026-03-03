@@ -57,7 +57,8 @@ class ASAE_CI_Admin {
 	// ── Menu Registration ─────────────────────────────────────────────────────
 
 	/**
-	 * Adds the plugin's pages under the WP Tools menu.
+	 * Adds the plugin's page under the WP Tools menu.
+	 * Reports are rendered as a tab within this single page – no separate menu entry.
 	 *
 	 * @return void
 	 */
@@ -68,15 +69,6 @@ class ASAE_CI_Admin {
 			'manage_options',
 			'asae-content-ingestor',
 			[ __CLASS__, 'render_main_page' ]
-		);
-
-		add_submenu_page(
-			'tools.php',
-			__( 'Ingestion Reports', 'asae-content-ingestor' ),
-			__( 'Ingestor Reports', 'asae-content-ingestor' ),
-			'manage_options',
-			'asae-ci-reports',
-			[ __CLASS__, 'render_reports_page' ]
 		);
 	}
 
@@ -91,7 +83,6 @@ class ASAE_CI_Admin {
 	public static function enqueue_assets( string $hook_suffix ): void {
 		$plugin_pages = [
 			'tools_page_asae-content-ingestor',
-			'tools_page_asae-ci-reports',
 		];
 
 		if ( ! in_array( $hook_suffix, $plugin_pages, true ) ) {
@@ -133,7 +124,13 @@ class ASAE_CI_Admin {
 	// ── Page Renderers ────────────────────────────────────────────────────────
 
 	/**
-	 * Renders the main Tools > Content Ingestor page.
+	 * Renders the Tools > Content Ingestor page, with tab routing.
+	 *
+	 * Tab 'run'     (default) – run configuration form and progress panels.
+	 * Tab 'reports'           – ingestion reports listing or report detail.
+	 *
+	 * All report sub-pages are handled here via the 'tab' and 'report_id'
+	 * query params, so no separate submenu entry is needed.
 	 *
 	 * @return void
 	 */
@@ -141,46 +138,37 @@ class ASAE_CI_Admin {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_die( esc_html__( 'You do not have permission to access this page.', 'asae-content-ingestor' ) );
 		}
-		$view = ASAE_CI_PATH . 'admin/views/page-main.php';
-		if ( file_exists( $view ) ) {
-			// Make plugin data available to the view template.
-			$post_types = self::get_eligible_post_types();
-			$cap_active = ASAE_CI_Ingester::cap_is_active();
+
+		$active_tab = sanitize_key( $_GET['tab'] ?? 'run' );
+		if ( ! in_array( $active_tab, [ 'run', 'reports' ], true ) ) {
+			$active_tab = 'run';
+		}
+
+		if ( 'reports' === $active_tab ) {
+			// Report detail or listing.
+			$report_id = isset( $_GET['report_id'] ) ? (int) $_GET['report_id'] : 0;
+			if ( $report_id > 0 ) {
+				$report = ASAE_CI_Reports::get_report( $report_id );
+				if ( ! $report ) {
+					wp_die( esc_html__( 'Report not found.', 'asae-content-ingestor' ) );
+				}
+				$page       = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
+				$items_data = ASAE_CI_Reports::get_report_items( $report_id, $page, 50 );
+				$view       = ASAE_CI_PATH . 'admin/views/page-report-detail.php';
+			} else {
+				$page         = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
+				$reports_data = ASAE_CI_Reports::get_reports( $page, 20 );
+				$view         = ASAE_CI_PATH . 'admin/views/page-reports.php';
+			}
+		} else {
+			// Run tab (default).
+			$active_tab           = 'run';
+			$post_types           = self::get_eligible_post_types();
+			$cap_active           = ASAE_CI_Ingester::cap_is_active();
 			$cap_notice_dismissed = (bool) get_transient( 'asae_ci_cap_dismissed_' . get_current_user_id() );
-			include $view;
-		}
-	}
-
-	/**
-	 * Renders the Ingestion Reports listing page.
-	 *
-	 * @return void
-	 */
-	public static function render_reports_page(): void {
-		if ( ! current_user_can( 'manage_options' ) ) {
-			wp_die( esc_html__( 'You do not have permission to access this page.', 'asae-content-ingestor' ) );
+			$view                 = ASAE_CI_PATH . 'admin/views/page-main.php';
 		}
 
-		// Report detail view.
-		$report_id = isset( $_GET['report_id'] ) ? (int) $_GET['report_id'] : 0;
-		if ( $report_id > 0 ) {
-			$report = ASAE_CI_Reports::get_report( $report_id );
-			if ( ! $report ) {
-				wp_die( esc_html__( 'Report not found.', 'asae-content-ingestor' ) );
-			}
-			$page       = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
-			$items_data = ASAE_CI_Reports::get_report_items( $report_id, $page, 50 );
-			$view = ASAE_CI_PATH . 'admin/views/page-report-detail.php';
-			if ( file_exists( $view ) ) {
-				include $view;
-			}
-			return;
-		}
-
-		// Reports listing view.
-		$page        = isset( $_GET['paged'] ) ? max( 1, (int) $_GET['paged'] ) : 1;
-		$reports_data = ASAE_CI_Reports::get_reports( $page, 20 );
-		$view = ASAE_CI_PATH . 'admin/views/page-reports.php';
 		if ( file_exists( $view ) ) {
 			include $view;
 		}

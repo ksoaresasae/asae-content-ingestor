@@ -574,7 +574,7 @@
 	 * @returns {string}
 	 */
 	function ajaxReportUrl( reportId ) {
-		return 'tools.php?page=asae-ci-reports&report_id=' + encodeURIComponent( reportId );
+		return 'tools.php?page=asae-content-ingestor&tab=reports&report_id=' + encodeURIComponent( reportId );
 	}
 
 	/**

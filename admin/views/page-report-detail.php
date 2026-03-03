@@ -31,16 +31,32 @@ $report_date = date_i18n(
 ?>
 <div class="wrap asae-ci-wrap">
 
-	<h1>
-		<?php esc_html_e( 'Report Detail', 'asae-content-ingestor' ); ?>
-		<span class="asae-ci-version"><?php echo esc_html( $report_date ); ?></span>
+	<h1><?php esc_html_e( 'ASAE Content Ingestor', 'asae-content-ingestor' ); ?>
+		<span class="asae-ci-version">v<?php echo esc_html( ASAE_CI_VERSION ); ?></span>
 	</h1>
 
+	<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Content Ingestor navigation', 'asae-content-ingestor' ); ?>">
+		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor' ) ); ?>"
+		   class="nav-tab">
+			<?php esc_html_e( 'Run', 'asae-content-ingestor' ); ?>
+		</a>
+		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
+		   class="nav-tab nav-tab-active"
+		   aria-current="page">
+			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
+		</a>
+	</nav>
+
 	<p>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-ci-reports' ) ); ?>" class="button">
+		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=reports' ) ); ?>" class="button">
 			&larr; <?php esc_html_e( 'Back to Reports', 'asae-content-ingestor' ); ?>
 		</a>
 	</p>
+
+	<h2>
+		<?php esc_html_e( 'Report Detail', 'asae-content-ingestor' ); ?>
+		<span class="asae-ci-version"><?php echo esc_html( $report_date ); ?></span>
+	</h2>
 
 	<!-- ── Report Summary Card ───────────────────────────────────────────── -->
 	<section class="asae-ci-card" aria-labelledby="asae-ci-report-summary-heading">
@@ -140,7 +156,7 @@ $report_date = date_i18n(
 			<div class="asae-ci-pagination" role="navigation" aria-label="<?php esc_attr_e( 'Items pagination (top)', 'asae-content-ingestor' ); ?>">
 				<?php for ( $p = 1; $p <= $pages; $p++ ) :
 					$page_url = add_query_arg(
-						[ 'page' => 'asae-ci-reports', 'report_id' => (int) $report['id'], 'paged' => $p ],
+						[ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'report_id' => (int) $report['id'], 'paged' => $p ],
 						admin_url( 'tools.php' )
 					);
 					$is_current = ( $p === (int) $page );
@@ -222,7 +238,7 @@ $report_date = date_i18n(
 			<div class="asae-ci-pagination" role="navigation" aria-label="<?php esc_attr_e( 'Items pagination (bottom)', 'asae-content-ingestor' ); ?>">
 				<?php for ( $p = 1; $p <= $pages; $p++ ) :
 					$page_url = add_query_arg(
-						[ 'page' => 'asae-ci-reports', 'report_id' => (int) $report['id'], 'paged' => $p ],
+						[ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'report_id' => (int) $report['id'], 'paged' => $p ],
 						admin_url( 'tools.php' )
 					);
 					$is_current = ( $p === (int) $page );

@@ -24,6 +24,18 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		<span class="asae-ci-version">v<?php echo esc_html( ASAE_CI_VERSION ); ?></span>
 	</h1>
 
+	<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Content Ingestor navigation', 'asae-content-ingestor' ); ?>">
+		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor' ) ); ?>"
+		   class="nav-tab nav-tab-active"
+		   aria-current="page">
+			<?php esc_html_e( 'Run', 'asae-content-ingestor' ); ?>
+		</a>
+		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
+		   class="nav-tab">
+			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
+		</a>
+	</nav>
+
 	<?php if ( ! $cap_active && ! $cap_notice_dismissed ) : ?>
 	<div class="asae-ci-notice asae-ci-notice-warning" id="asae-ci-cap-notice" role="alert">
 		<p>
@@ -308,14 +320,5 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		</div>
 	</section>
 
-	<!-- ── Recent Reports Quick Link ─────────────────────────────────────── -->
-	<section class="asae-ci-card" aria-labelledby="asae-ci-recent-heading">
-		<h2 id="asae-ci-recent-heading"><?php esc_html_e( 'Ingestion Reports', 'asae-content-ingestor' ); ?></h2>
-		<p>
-			<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-ci-reports' ) ); ?>" class="button">
-				<?php esc_html_e( 'View All Reports →', 'asae-content-ingestor' ); ?>
-			</a>
-		</p>
-	</section>
 
 </div><!-- .asae-ci-wrap -->
