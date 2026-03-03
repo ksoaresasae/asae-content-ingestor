@@ -461,17 +461,59 @@ class ASAE_CI_Ingester {
 	/**
 	 * Splits a full display name into first and last name components.
 	 *
-	 * The last whitespace-delimited word is treated as the last name; everything
-	 * before it is the first name. Single-word names are returned as first name
-	 * only (last name is empty string).
+	 * Professional designations (CAE, FASAE, PhD, MBA, JD, etc.) are stripped
+	 * from the end of the name before splitting so they do not get stored as
+	 * the last name. A name may carry more than one designation; they are
+	 * removed iteratively until none remain. Short or ambiguous codes (MA, MS)
+	 * are deliberately omitted to avoid false-positive matches against real
+	 * last-name fragments — if a designation is not on the list, the fallback
+	 * of using the trailing word as the last name is acceptable per requirements.
 	 *
-	 * @param string $name Full display name.
+	 * @param string $name Full display name, possibly including designations.
 	 * @return array { first: string, last: string }
 	 */
 	private static function parse_name_parts( string $name ): array {
-		$parts = preg_split( '/\s+/', trim( $name ), -1, PREG_SPLIT_NO_EMPTY );
+		// Designations to strip. Listed as plain strings; preg_quote() is
+		// applied when building the pattern. Short 2-letter codes that double
+		// as common name parts (MA, MS, etc.) are intentionally excluded.
+		$designations = [
+			// ASAE / association-industry specific.
+			'CAE', 'FASAE',
+			// Doctoral and professional degrees.
+			'PhD', 'Ph.D.', 'Ph.D', 'DBA', 'EdD', 'Ed.D.', 'PsyD',
+			'MD', 'M.D.', 'JD', 'J.D.', 'LLD', 'LL.D.', 'LLM', 'LL.M.',
+			'DNP', 'DSW', 'ScD',
+			// Graduate degrees (less ambiguous as last-name candidates).
+			'MBA', 'MPA', 'MPH', 'MHA',
+			// Legal suffix.
+			'Esq', 'Esq.',
+			// Professional certifications common in the association world.
+			'CPA', 'CFA', 'CFP', 'PMP', 'CMP', 'CMM', 'CPM',
+			'SPHR', 'PHR', 'SHRM-CP', 'SHRM-SCP',
+		];
+
+		// Build a regex alternation from the quoted designation strings.
+		$alts    = implode( '|', array_map( fn( $d ) => preg_quote( $d, '/' ), $designations ) );
+		// Pattern: optional commas/spaces before the designation at end-of-string.
+		// The trailing \.? handles cases where an unlisted period follows.
+		$pattern = '/[\s,]+(?:' . $alts . ')\.?$/iu';
+
+		// Strip designations iteratively — a name can carry more than one.
+		$clean = trim( $name );
+		$prev  = null;
+		while ( $prev !== $clean ) {
+			$prev  = $clean;
+			$clean = rtrim( trim( preg_replace( $pattern, '', $clean ) ), ',' );
+		}
+
+		// Safety: if stripping removed everything, use the original name.
+		if ( empty( $clean ) ) {
+			$clean = $name;
+		}
+
+		$parts = preg_split( '/\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY );
 		if ( count( $parts ) < 2 ) {
-			return [ 'first' => $parts[0] ?? $name, 'last' => '' ];
+			return [ 'first' => $parts[0] ?? trim( $name ), 'last' => '' ];
 		}
 		$last  = array_pop( $parts );
 		$first = implode( ' ', $parts );
