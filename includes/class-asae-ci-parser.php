@@ -794,7 +794,11 @@ class ASAE_CI_Parser {
 			'//script',
 			'//style',
 			'//nav',
-			'//header',
+			// Strip only the article's own lead header (direct child of the
+			// content wrapper). Section-level <header> elements nested deeper
+			// inside the article body are preserved. The global site header is
+			// already outside the content node and never imported.
+			'//div[@id="asae-ci-wrap"]/header',
 			'//footer',
 			'//aside',
 			'//form',
