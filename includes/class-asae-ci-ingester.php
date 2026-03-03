@@ -72,15 +72,33 @@ class ASAE_CI_Ingester {
 			$post_arr['post_date_gmt'] = get_gmt_from_date( $date );
 		}
 
-		// Provision author – finds or creates a subscriber user; deduplicates by login slug.
-		$author_id = self::get_or_create_author_user(
-			sanitize_text_field( $parsed_data['author']         ?? '' ),
-			$parsed_data['author_bio_url']                       ?? '',
-			sanitize_textarea_field( $parsed_data['author_bio']  ?? '' ),
-			$parsed_data['author_photo_url']                     ?? ''
-		);
-		if ( $author_id ) {
-			$post_arr['post_author'] = $author_id;
+		// Provision authors – find or create one subscriber user per author name.
+		// Only the first author gets the inline bio/photo context from this article.
+		$authors    = $parsed_data['authors'] ?? [];
+		if ( empty( $authors ) && ! empty( $parsed_data['author'] ) ) {
+			$authors = [ $parsed_data['author'] ];
+		}
+		$author_ids = [];
+		foreach ( $authors as $idx => $author_name ) {
+			$author_name = sanitize_text_field( $author_name );
+			if ( empty( $author_name ) ) {
+				continue;
+			}
+			$bio_url   = 0 === $idx ? ( $parsed_data['author_bio_url']   ?? '' ) : '';
+			$bio_text  = 0 === $idx ? ( $parsed_data['author_bio']       ?? '' ) : '';
+			$photo_url = 0 === $idx ? ( $parsed_data['author_photo_url'] ?? '' ) : '';
+			$aid = self::get_or_create_author_user(
+				$author_name,
+				$bio_url,
+				sanitize_textarea_field( $bio_text ),
+				$photo_url
+			);
+			if ( $aid ) {
+				$author_ids[] = $aid;
+			}
+		}
+		if ( ! empty( $author_ids ) ) {
+			$post_arr['post_author'] = $author_ids[0];
 		}
 
 		// Insert the post into WordPress.
@@ -89,12 +107,18 @@ class ASAE_CI_Ingester {
 			return $post_id;
 		}
 
-		// Assign author via Co-Authors Plus if the plugin is active.
-		if ( $author_id && self::cap_is_active() ) {
+		// Assign all authors via Co-Authors Plus if the plugin is active.
+		if ( ! empty( $author_ids ) && self::cap_is_active() ) {
 			global $coauthors_plus;
-			$author_user = get_user_by( 'id', $author_id );
-			if ( $author_user ) {
-				$coauthors_plus->add_coauthors( $post_id, [ $author_user->user_login ], false );
+			$coauthor_logins = [];
+			foreach ( $author_ids as $aid ) {
+				$author_user = get_user_by( 'id', $aid );
+				if ( $author_user ) {
+					$coauthor_logins[] = $author_user->user_login;
+				}
+			}
+			if ( ! empty( $coauthor_logins ) ) {
+				$coauthors_plus->add_coauthors( $post_id, $coauthor_logins, false );
 			}
 		}
 
@@ -435,6 +459,26 @@ class ASAE_CI_Ingester {
 	// ── Author Handling ───────────────────────────────────────────────────────
 
 	/**
+	 * Splits a full display name into first and last name components.
+	 *
+	 * The last whitespace-delimited word is treated as the last name; everything
+	 * before it is the first name. Single-word names are returned as first name
+	 * only (last name is empty string).
+	 *
+	 * @param string $name Full display name.
+	 * @return array { first: string, last: string }
+	 */
+	private static function parse_name_parts( string $name ): array {
+		$parts = preg_split( '/\s+/', trim( $name ), -1, PREG_SPLIT_NO_EMPTY );
+		if ( count( $parts ) < 2 ) {
+			return [ 'first' => $parts[0] ?? $name, 'last' => '' ];
+		}
+		$last  = array_pop( $parts );
+		$first = implode( ' ', $parts );
+		return [ 'first' => $first, 'last' => $last ];
+	}
+
+	/**
 	 * Finds or creates a WordPress subscriber user for the given author.
 	 *
 	 * Deduplication strategy (in priority order):
@@ -460,12 +504,23 @@ class ASAE_CI_Ingester {
 			return 0;
 		}
 
-		$login = 'asae-ci-' . sanitize_title( $name );
+		// Build the login slug: asae-{lastname}-{firstname}.
+		$name_parts = self::parse_name_parts( $name );
+		$first      = $name_parts['first'];
+		$last       = $name_parts['last'];
+		$slug_parts = array_filter( [ sanitize_title( $last ), sanitize_title( $first ) ] );
+		$login      = 'asae-' . ( ! empty( $slug_parts ) ? implode( '-', $slug_parts ) : sanitize_title( $name ) );
 
-		// 1. Check by deterministic login slug.
+		// 1. Check by new slug format.
 		$user = get_user_by( 'login', $login );
 
-		// 2. Fall back to meta-based lookup.
+		// 2. Backward-compat: check old slug format (pre-v0.3.4 users).
+		if ( ! $user ) {
+			$old_login = 'asae-ci-' . sanitize_title( $name );
+			$user      = get_user_by( 'login', $old_login );
+		}
+
+		// 3. Fall back to meta-based lookup.
 		if ( ! $user ) {
 			$found = get_users( [
 				'meta_key'   => '_asae_ci_author_name',
@@ -477,12 +532,14 @@ class ASAE_CI_Ingester {
 			}
 		}
 
-		// 3. Create a new subscriber user.
+		// 4. Create a new subscriber user.
 		if ( ! $user ) {
 			$user_id = wp_insert_user( [
 				'user_login'   => $login,
 				'user_pass'    => wp_generate_password( 24, true, true ),
 				'display_name' => $name,
+				'first_name'   => $first,
+				'last_name'    => $last,
 				'role'         => 'subscriber',
 			] );
 

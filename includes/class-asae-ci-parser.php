@@ -77,7 +77,7 @@ class ASAE_CI_Parser {
 
 		// Extract each piece of article data.
 		$title          = self::extract_title( $dom, $xpath );
-		$author         = self::extract_author( $dom, $xpath );
+		$authors        = self::extract_authors( $dom, $xpath );
 		$author_context = self::extract_author_context( $dom, $xpath, $url );
 		$date           = self::extract_date( $dom, $xpath );
 		$tags           = self::extract_taxonomies( $dom, $xpath );
@@ -96,7 +96,8 @@ class ASAE_CI_Parser {
 		return [
 			'title'            => $title,
 			'content'          => $content,
-			'author'           => $author,
+			'authors'          => $authors,
+			'author'           => implode( ', ', $authors ), // Backward-compat string for reports/dry-run.
 			'author_bio'       => $author_context['bio'],
 			'author_bio_url'   => $author_context['bio_url'],
 			'author_photo_url' => $author_context['photo_url'],
@@ -163,44 +164,78 @@ class ASAE_CI_Parser {
 	// ── Author Extraction ─────────────────────────────────────────────────────
 
 	/**
-	 * Extracts the author name using a priority-ordered set of strategies.
+	 * Extracts author names using a priority-ordered set of strategies.
+	 * Returns an array so that multi-author articles are handled correctly.
+	 *
+	 * Priority:
+	 *  1. meta[name="author"] – split on " and " / commas if needed.
+	 *  2. All <a rel="author"> links (one element per author on well-marked pages).
+	 *  3. JSON-LD author field – handles string, single object, and array forms.
+	 *  4. Common byline class patterns – split on " and " / commas.
 	 *
 	 * @param DOMDocument $dom   Parsed DOM.
 	 * @param DOMXPath    $xpath XPath evaluator.
-	 * @return string Author name or empty string.
+	 * @return string[] Array of author display-name strings (may be empty).
 	 */
-	private static function extract_author( DOMDocument $dom, DOMXPath $xpath ): string {
-		// 1. article:author meta tag.
+	private static function extract_authors( DOMDocument $dom, DOMXPath $xpath ): array {
+		// 1. meta[name="author"].
 		$meta_author = $xpath->query( '//meta[@name="author"]/@content' );
 		if ( $meta_author && $meta_author->length > 0 ) {
-			$val = trim( $meta_author->item(0)->nodeValue );
-			if ( $val ) {
-				return $val;
+			$val   = trim( $meta_author->item(0)->nodeValue );
+			$parts = $val ? self::split_author_string( $val ) : [];
+			if ( ! empty( $parts ) ) {
+				return $parts;
 			}
 		}
 
-		// 2. <a rel="author"> link text.
-		$rel_author = $xpath->query( '//a[@rel="author"]' );
-		if ( $rel_author && $rel_author->length > 0 ) {
-			$val = trim( $rel_author->item(0)->textContent );
-			if ( $val ) {
-				return $val;
+		// 2. <a rel="author"> links – collect all (there may be one per author).
+		$rel_authors = $xpath->query( '//a[@rel="author"]' );
+		if ( $rel_authors && $rel_authors->length > 0 ) {
+			$names = [];
+			foreach ( $rel_authors as $a ) {
+				$val = trim( $a->textContent );
+				if ( $val && strlen( $val ) < 100 ) {
+					$names[] = $val;
+				}
+			}
+			if ( ! empty( $names ) ) {
+				return array_values( array_unique( $names ) );
 			}
 		}
 
-		// 3. JSON-LD structured data (article author).
+		// 3. JSON-LD structured data – handles string, object, and array forms.
 		$scripts = $xpath->query( '//script[@type="application/ld+json"]' );
 		if ( $scripts ) {
 			foreach ( $scripts as $script ) {
 				$json = json_decode( trim( $script->textContent ), true );
-				if ( is_array( $json ) && isset( $json['author'] ) ) {
-					$author_node = $json['author'];
-					if ( is_array( $author_node ) && isset( $author_node['name'] ) ) {
-						return trim( $author_node['name'] );
+				if ( ! is_array( $json ) || ! isset( $json['author'] ) ) {
+					continue;
+				}
+				$field = $json['author'];
+
+				// Array of author objects/strings.
+				if ( isset( $field[0] ) ) {
+					$names = [];
+					foreach ( $field as $a ) {
+						if ( is_array( $a ) && ! empty( $a['name'] ) ) {
+							$names[] = trim( $a['name'] );
+						} elseif ( is_string( $a ) && $a ) {
+							$names[] = trim( $a );
+						}
 					}
-					if ( is_string( $author_node ) && $author_node ) {
-						return trim( $author_node );
+					if ( ! empty( $names ) ) {
+						return array_values( array_unique( $names ) );
 					}
+				}
+
+				// Single author object.
+				if ( is_array( $field ) && ! empty( $field['name'] ) ) {
+					return self::split_author_string( (string) $field['name'] );
+				}
+
+				// Single author string.
+				if ( is_string( $field ) && $field ) {
+					return self::split_author_string( $field );
 				}
 			}
 		}
@@ -213,19 +248,75 @@ class ASAE_CI_Parser {
 		];
 		foreach ( $byline_xpaths as $expr ) {
 			$nodes = $xpath->query( $expr );
-			if ( $nodes && $nodes->length > 0 ) {
-				$val = trim( $nodes->item(0)->textContent );
-				// Sanitise common prefixes like "By " or "Author: ".
-				$val = preg_replace( '/^(by|author)[:\s]+/i', '', $val );
-				$val = trim( $val );
-				// Reject if it looks like a block of body text rather than a name.
-				if ( $val && strlen( $val ) < 100 ) {
-					return $val;
+			if ( ! $nodes || $nodes->length === 0 ) {
+				continue;
+			}
+			$val = trim( $nodes->item(0)->textContent );
+			$val = preg_replace( '/^(by|author)[:\s]+/i', '', $val );
+			$val = trim( $val );
+			if ( $val && strlen( $val ) < 200 ) {
+				$parts = self::split_author_string( $val );
+				if ( ! empty( $parts ) ) {
+					return $parts;
 				}
 			}
 		}
 
-		return '';
+		return [];
+	}
+
+	/**
+	 * Splits an author string that may contain multiple names (e.g. "Jane Doe
+	 * and John Smith" or "Jane Doe, John Smith") into individual name strings.
+	 *
+	 * Comma-splitting is only applied when every resulting sub-string contains
+	 * at least two words, which filters out "Smith, Jr." style suffixes.
+	 *
+	 * @param string $str Raw author string.
+	 * @return string[]
+	 */
+	private static function split_author_string( string $str ): array {
+		$str = trim( $str );
+		if ( empty( $str ) ) {
+			return [];
+		}
+
+		// First split on " and " or " & ".
+		$parts  = preg_split( '/\s+(?:and|&)\s+/i', $str );
+		$result = [];
+
+		foreach ( $parts as $part ) {
+			$part = trim( $part );
+			if ( empty( $part ) ) {
+				continue;
+			}
+
+			// Attempt comma-splitting only when every sub-part has ≥ 2 words
+			// (avoids splitting "Smith, Jr." or "Smith, MD").
+			$comma_parts = array_map( 'trim', explode( ',', $part ) );
+			if ( count( $comma_parts ) > 1 ) {
+				$all_multi_word = true;
+				foreach ( $comma_parts as $cp ) {
+					if ( count( preg_split( '/\s+/', trim( $cp ), -1, PREG_SPLIT_NO_EMPTY ) ) < 2 ) {
+						$all_multi_word = false;
+						break;
+					}
+				}
+				if ( $all_multi_word ) {
+					foreach ( $comma_parts as $cp ) {
+						$cp = trim( $cp );
+						if ( $cp ) {
+							$result[] = $cp;
+						}
+					}
+					continue;
+				}
+			}
+
+			$result[] = $part;
+		}
+
+		return array_values( array_filter( $result ) );
 	}
 
 	// ── Author Context Extraction ─────────────────────────────────────────────
@@ -657,21 +748,31 @@ class ASAE_CI_Parser {
 	 * @return string Cleaned HTML string.
 	 */
 	private static function extract_body_html( DOMNode $node, DOMDocument $dom, string $page_url ): string {
-		// Serialise the content node to HTML once, then re-parse in isolation so
-		// any saveHTML quirks with LIBXML_HTML_NOIMPLIED are sidestepped.
-		$html_fragment = $dom->saveHTML( $node );
-		if ( empty( trim( $html_fragment ) ) ) {
-			return '';
-		}
-
-		// Load into a fresh document inside a known wrapper so we can reliably
-		// retrieve innerHTML without the html/head/body envelope.
+		// Build a clean working document with a known wrapper.
+		// We import the CHILDREN of the content node (not the node itself) so
+		// that block-level container tags (<body>, <article>, <main>, etc.)
+		// cannot escape the wrapper when libxml re-parses the HTML.
 		$work = new DOMDocument();
 		libxml_use_internal_errors( true );
-		$work->loadHTML( '<?xml encoding="UTF-8"><div id="asae-ci-wrap">' . $html_fragment . '</div>' );
+		$work->loadHTML( '<?xml encoding="UTF-8"><html><body><div id="asae-ci-wrap"></div></body></html>' );
 		libxml_clear_errors();
 
 		$work_xpath = new DOMXPath( $work );
+		$wrappers   = $work_xpath->query( '//div[@id="asae-ci-wrap"]' );
+		if ( ! $wrappers || ! $wrappers->length ) {
+			return '';
+		}
+		$wrapper = $wrappers->item( 0 );
+
+		// childNodes is a live NodeList; snapshot to a static array before iterating.
+		$children = [];
+		foreach ( $node->childNodes as $child ) {
+			$children[] = $child;
+		}
+		foreach ( $children as $child ) {
+			$imported = $work->importNode( $child, true );
+			$wrapper->appendChild( $imported );
+		}
 
 		// XPath expressions for elements that must not appear in post content.
 		// Author bio blocks are stripped here; their text has already been
@@ -719,12 +820,7 @@ class ASAE_CI_Parser {
 		}
 
 		// Return innerHTML of the wrapper div (excludes the wrapper tag itself).
-		$wrappers = $work_xpath->query( '//div[@id="asae-ci-wrap"]' );
-		if ( ! $wrappers || ! $wrappers->length ) {
-			return '';
-		}
-		$wrapper = $wrappers->item(0);
-		$inner   = '';
+		$inner = '';
 		foreach ( $wrapper->childNodes as $child ) {
 			$inner .= $work->saveHTML( $child );
 		}
