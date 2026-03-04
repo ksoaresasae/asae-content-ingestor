@@ -575,6 +575,79 @@ class ASAE_CI_Parser {
 			break; // Use the first matching author block only.
 		}
 
+		// Broad heuristic fallback for BEM-named blocks (e.g. "issue-article__author").
+		// Fires only when the specific patterns above found nothing useful.
+		if ( empty( $bio ) && empty( $photo_url ) ) {
+			$broad_blocks = $xpath->query(
+				'//*[contains(@class,"author") and .//img and string-length(normalize-space(.)) > 100]'
+			);
+			if ( $broad_blocks && $broad_blocks->length > 0 ) {
+				$block = $broad_blocks->item( 0 );
+
+				// Bio: prefer explicit sub-element with "description" or "bio" class, then first <p>.
+				$desc_nodes = $xpath->query(
+					'.//*[contains(@class,"description") or contains(@class,"bio") or @itemprop="description"]',
+					$block
+				);
+				if ( $desc_nodes && $desc_nodes->length > 0 ) {
+					$val = trim( $desc_nodes->item(0)->textContent );
+					if ( $val && strlen( $val ) > 20 ) {
+						$bio = sanitize_textarea_field( $val );
+					}
+				}
+				if ( empty( $bio ) ) {
+					$paras = $xpath->query( './/p', $block );
+					if ( $paras && $paras->length > 0 ) {
+						$val = trim( $paras->item(0)->textContent );
+						if ( $val && strlen( $val ) > 20 ) {
+							$bio = sanitize_textarea_field( $val );
+						}
+					}
+				}
+
+				// Photo: itemprop="image" → .avatar class → any img.
+				$itemprop_img = $xpath->query( './/*[@itemprop="image"]/@src', $block );
+				if ( $itemprop_img && $itemprop_img->length > 0 ) {
+					$src = trim( $itemprop_img->item(0)->nodeValue );
+					if ( $src ) {
+						$photo_url = self::resolve_image_url( $src, $page_url );
+					}
+				}
+				if ( empty( $photo_url ) ) {
+					$avatar_imgs = $xpath->query( './/img[contains(@class,"avatar")]/@src', $block );
+					if ( $avatar_imgs && $avatar_imgs->length > 0 ) {
+						$src = trim( $avatar_imgs->item(0)->nodeValue );
+						if ( $src ) {
+							$photo_url = self::resolve_image_url( $src, $page_url );
+						}
+					}
+				}
+				if ( empty( $photo_url ) ) {
+					$imgs = $xpath->query( './/img/@src', $block );
+					if ( $imgs && $imgs->length > 0 ) {
+						$src = trim( $imgs->item(0)->nodeValue );
+						if ( $src ) {
+							$photo_url = self::resolve_image_url( $src, $page_url );
+						}
+					}
+				}
+
+				// Profile link.
+				if ( empty( $bio_url ) ) {
+					$links = $xpath->query( './/a/@href', $block );
+					if ( $links ) {
+						foreach ( $links as $href_node ) {
+							$href = trim( $href_node->nodeValue );
+							if ( $href && '#' !== $href[0] && false === strpos( $href, '/search' ) ) {
+								$bio_url = self::resolve_author_url( $href, $page_url );
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+
 		return [
 			'bio'       => $bio,
 			'bio_url'   => $bio_url,
@@ -1235,6 +1308,9 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"contributor-box")]',
 			'//*[contains(@class,"wp-block-post-author")]',
 			'//*[@itemprop="author"]',
+			// Broad heuristic: BEM-named author blocks (e.g. "issue-article__author")
+			// that contain an image and substantial text — catches patterns missed above.
+			'//*[contains(@class,"author") and .//img and string-length(normalize-space(.)) > 100]',
 			// Article-level header containers (category label + title + byline).
 			// Many WP themes group these into a header div; removing the container
 			// catches all three at once even when individual elements use custom classes.
