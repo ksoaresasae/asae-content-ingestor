@@ -465,11 +465,14 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"author-bio")]',
 			'//*[contains(@class,"author-box")]',
 			'//*[contains(@class,"post-author")]',
+			'//*[contains(@class,"entry-author")]',
 			'//*[contains(@class,"author-section")]',
 			'//*[contains(@class,"author-profile")]',
 			'//*[contains(@class,"author-widget")]',
 			'//*[contains(@class,"contributor-box")]',
 			'//*[contains(@class,"wp-block-post-author")]',
+			// Schema.org microdata author containers.
+			'//*[@itemprop="author"]',
 		];
 
 		foreach ( $block_xpaths as $expr ) {
@@ -497,6 +500,16 @@ class ASAE_CI_Parser {
 						}
 					}
 				}
+				// Schema.org itemprop="description" inside the author block.
+				if ( empty( $bio ) ) {
+					$itemprop_desc = $xpath->query( './/*[@itemprop="description"]', $block );
+					if ( $itemprop_desc && $itemprop_desc->length > 0 ) {
+						$val = trim( $itemprop_desc->item(0)->textContent );
+						if ( $val && strlen( $val ) > 20 ) {
+							$bio = sanitize_textarea_field( $val );
+						}
+					}
+				}
 				// Fallback: first <p> inside the block.
 				if ( empty( $bio ) ) {
 					$paras = $xpath->query( './/p', $block );
@@ -509,9 +522,22 @@ class ASAE_CI_Parser {
 				}
 			}
 
-			// Photo: prefer <img class="avatar"> (WP Gravatar standard) then
-			// any img in the block.
+			// Photo: check itemprop="image", then class="avatar", then any img.
 			if ( empty( $photo_url ) ) {
+				// Schema.org itemprop="image" — most explicit signal.
+				$itemprop_img = $xpath->query( './/img[@itemprop="image"]/@src', $block );
+				if ( ! $itemprop_img || ! $itemprop_img->length ) {
+					$itemprop_img = $xpath->query( './/*[@itemprop="image"]//img/@src', $block );
+				}
+				if ( $itemprop_img && $itemprop_img->length > 0 ) {
+					$src = trim( $itemprop_img->item(0)->nodeValue );
+					if ( $src ) {
+						$photo_url = self::resolve_image_url( $src, $page_url );
+					}
+				}
+			}
+			if ( empty( $photo_url ) ) {
+				// <img class="avatar"> — standard WP Gravatar class (real avatar, not placeholder).
 				$avatar_imgs = $xpath->query( './/img[contains(@class,"avatar")]/@src', $block );
 				if ( $avatar_imgs && $avatar_imgs->length > 0 ) {
 					$src = trim( $avatar_imgs->item(0)->nodeValue );
@@ -519,13 +545,14 @@ class ASAE_CI_Parser {
 						$photo_url = self::resolve_image_url( $src, $page_url );
 					}
 				}
-				if ( empty( $photo_url ) ) {
-					$imgs = $xpath->query( './/img/@src', $block );
-					if ( $imgs && $imgs->length > 0 ) {
-						$src = trim( $imgs->item(0)->nodeValue );
-						if ( $src ) {
-							$photo_url = self::resolve_image_url( $src, $page_url );
-						}
+			}
+			if ( empty( $photo_url ) ) {
+				// Any img inside the block as a last resort.
+				$imgs = $xpath->query( './/img/@src', $block );
+				if ( $imgs && $imgs->length > 0 ) {
+					$src = trim( $imgs->item(0)->nodeValue );
+					if ( $src ) {
+						$photo_url = self::resolve_image_url( $src, $page_url );
 					}
 				}
 			}
@@ -1204,6 +1231,10 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"entry-author")]',
 			'//*[contains(@class,"author-section")]',
 			'//*[contains(@class,"author-profile")]',
+			'//*[contains(@class,"author-widget")]',
+			'//*[contains(@class,"contributor-box")]',
+			'//*[contains(@class,"wp-block-post-author")]',
+			'//*[@itemprop="author"]',
 			// Article-level header containers (category label + title + byline).
 			// Many WP themes group these into a header div; removing the container
 			// catches all three at once even when individual elements use custom classes.

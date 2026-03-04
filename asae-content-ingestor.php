@@ -3,7 +3,7 @@
  * Plugin Name:       ASAE Content Ingestor
  * Plugin URI:        https://keithmsoares.com
  * Description:       Reads an RSS/Atom feed and ingests linked articles as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Supports a URL restriction prefix to filter feed links. Designed for migrating legacy ASAE sites into WordPress.
- * Version:           0.4.2
+ * Version:           0.4.3
  * Author:            Keith M. Soares
  * Author URI:        https://keithmsoares.com
  * License:           CC
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ── Plugin Constants ──────────────────────────────────────────────────────────
 
 /** Semantic version string used throughout the codebase and in the UI. */
-define( 'ASAE_CI_VERSION', '0.4.2' );
+define( 'ASAE_CI_VERSION', '0.4.3' );
 
 /** Absolute path to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_PATH', plugin_dir_path( __FILE__ ) );
@@ -105,9 +105,60 @@ function asae_ci_init() {
 	// Register WP Cron callback for background batch processing.
 	add_action( ASAE_CI_CRON_HOOK, [ 'ASAE_CI_Scheduler', 'process_cron_batch' ] );
 
+	// Serve stored author photos as avatars everywhere WP renders get_avatar().
+	// This works regardless of whether Simple Local Avatars is installed.
+	add_filter( 'pre_get_avatar_data', 'asae_ci_filter_avatar_data', 10, 2 );
+
 	// Initialise the admin UI (menus, AJAX handlers, enqueue hooks).
 	if ( is_admin() ) {
 		ASAE_CI_Admin::init();
 	}
 }
 add_action( 'plugins_loaded', 'asae_ci_init' );
+
+/**
+ * Supplies a stored author photo URL to WordPress's avatar system.
+ *
+ * Runs on the 'pre_get_avatar_data' filter so it fires for both the admin
+ * user profile screen and any theme location that calls get_avatar().
+ * Only activates when the user account was created by this plugin and has
+ * a photo stored in the '_asae_ci_author_photo_id' user meta key.
+ *
+ * @param array $args         Avatar data args passed by WP.
+ * @param mixed $id_or_email  User ID, WP_User, WP_Post, or email string.
+ * @return array Modified args with the stored photo URL when available.
+ */
+function asae_ci_filter_avatar_data( array $args, $id_or_email ): array {
+	// Resolve the argument to a numeric WP user ID.
+	$user_id = 0;
+	if ( is_int( $id_or_email ) || ( is_string( $id_or_email ) && ctype_digit( $id_or_email ) ) ) {
+		$user_id = (int) $id_or_email;
+	} elseif ( $id_or_email instanceof WP_User ) {
+		$user_id = (int) $id_or_email->ID;
+	} elseif ( $id_or_email instanceof WP_Post ) {
+		$user_id = (int) $id_or_email->post_author;
+	} elseif ( is_string( $id_or_email ) && is_email( $id_or_email ) ) {
+		$user = get_user_by( 'email', $id_or_email );
+		if ( $user ) {
+			$user_id = (int) $user->ID;
+		}
+	}
+
+	if ( ! $user_id ) {
+		return $args;
+	}
+
+	$attachment_id = (int) get_user_meta( $user_id, '_asae_ci_author_photo_id', true );
+	if ( ! $attachment_id ) {
+		return $args;
+	}
+
+	$size    = ! empty( $args['size'] ) ? (int) $args['size'] : 96;
+	$img_src = wp_get_attachment_image_src( $attachment_id, [ $size, $size ] );
+	if ( $img_src && ! empty( $img_src[0] ) ) {
+		$args['url']          = $img_src[0];
+		$args['found_avatar'] = true;
+	}
+
+	return $args;
+}

@@ -1118,11 +1118,9 @@ class ASAE_CI_Ingester {
 
 		update_user_meta( $user_id, '_asae_ci_author_photo_id', $attachment_id );
 
-		// Simple Local Avatars integration.
-		$local_url = wp_get_attachment_url( $attachment_id );
-		if ( $local_url ) {
-			update_user_meta( $user_id, 'simple_local_avatar', [ 'full' => $local_url ] );
-		}
+		// Simple Local Avatars integration (v2.x stores the attachment ID, not the URL).
+		// The plugin retrieves the URL dynamically via wp_get_attachment_image_src().
+		update_user_meta( $user_id, 'simple_local_avatar', [ 'full' => $attachment_id ] );
 	}
 
 	/**
