@@ -52,6 +52,8 @@
 	var $reviewApplyRow   = $( '#asae-ci-review-apply-row' );
 	var $reviewError      = $( '#asae-ci-review-error' );
 	var $applyBtn         = $( '#asae-ci-apply-categories-btn' );
+	var $modal            = $( '#asae-ci-preview-modal' );
+	var $modalBody        = $( '#asae-ci-modal-body' );
 
 	// ── State ────────────────────────────────────────────────────────────────
 
@@ -59,6 +61,8 @@
 	var pollTimer         = null;
 	var isProcessing      = false;
 	var pendingReviewData = null; // Stored when job enters needs_review state.
+	var dryResultsData    = [];   // Full dry-run result objects for the preview modal.
+	var modalTrigger      = null; // Button that opened the modal (for focus restoration).
 
 	// ── Form Submission ──────────────────────────────────────────────────────
 
@@ -290,17 +294,21 @@
 
 	/**
 	 * Renders the dry-run preview results as an accessible HTML table.
+	 * Each row includes a "Preview" button that opens the detail modal.
 	 *
 	 * @param {Array} results Array of dry-run preview objects.
 	 */
 	function renderDryResults( results ) {
-		if ( ! results || ! results.length ) {
+		// Store the full results for the preview modal to reference by index.
+		dryResultsData = results || [];
+
+		if ( ! dryResultsData.length ) {
 			$dryTableWrap.html( '<p>No articles were found in the specified folder.</p>' );
 			$dryPanel.removeClass( 'asae-ci-hidden' );
 			return;
 		}
 
-		var rows = results.map( function ( item ) {
+		var rows = dryResultsData.map( function ( item, idx ) {
 			var statusLabel = item.is_duplicate ? 'Would skip (duplicate)' : 'Would ingest';
 			var statusClass = item.is_duplicate ? 'asae-ci-status-warning' : 'asae-ci-status-info';
 			var tagsText    = Array.isArray( item.tags ) ? item.tags.join( ', ' ) : ( item.tags || '' );
@@ -318,6 +326,7 @@
 				'<td>' + escHtml( tagsText ) + '</td>' +
 				'<td><span class="' + ( catClass ? 'asae-ci-status ' + catClass : '' ) + '">' + escHtml( catText ) + '</span></td>' +
 				'<td><span class="asae-ci-status ' + statusClass + '">' + escHtml( statusLabel ) + '</span></td>' +
+				'<td><button type="button" class="button button-small asae-ci-preview-btn" data-idx="' + idx + '">Preview</button></td>' +
 				'</tr>';
 		} );
 
@@ -331,6 +340,7 @@
 			'<th scope="col">Tags</th>' +
 			'<th scope="col">Category</th>' +
 			'<th scope="col">Action</th>' +
+			'<th scope="col">Detail</th>' +
 			'</tr></thead>' +
 			'<tbody>' + rows.join( '' ) + '</tbody>' +
 			'</table>';
@@ -341,6 +351,125 @@
 		// Scroll to the dry results panel.
 		$( 'html, body' ).animate( { scrollTop: $dryPanel.offset().top - 40 }, 400 );
 	}
+
+	// ── Dry Run Article Preview Modal ─────────────────────────────────────────
+
+	/**
+	 * Opens the detail modal for a single dry-run result item.
+	 * Populates the modal body with one labelled section per WP field.
+	 *
+	 * @param {Object} item  One entry from dryResultsData.
+	 * @param {Element} triggerEl  The button that was clicked (for focus restoration on close).
+	 */
+	function openPreviewModal( item, triggerEl ) {
+		modalTrigger = triggerEl || null;
+
+		var tagsText   = Array.isArray( item.tags ) ? item.tags.join( ', ' ) : ( item.tags || '—' );
+		var dateText   = item.date ? item.date.replace( /\s.*$/, '' ) : '—';
+		var catText    = item.category_match || '— (needs review)';
+		var excerptTxt = item.excerpt || '—';
+		var featText   = item.has_featured ? 'Yes' : 'No';
+
+		// Build a definition list of all WP fields.
+		var fields = [
+			{ label: 'Source URL',      value: '<a href="' + escAttr( item.source_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( item.source_url ) + '</a>' },
+			{ label: 'Post Title',      value: escHtml( item.post_title || '(untitled)' ) },
+			{ label: 'Author',          value: escHtml( item.author || '—' ) },
+			{ label: 'Date',            value: escHtml( dateText ) },
+			{ label: 'Tags',            value: escHtml( tagsText ) || '—' },
+			{ label: 'Category',        value: escHtml( catText ) },
+			{ label: 'Excerpt',         value: escHtml( excerptTxt ) },
+			{ label: 'Featured Image',  value: escHtml( featText ) },
+		];
+
+		var dlHtml = '<dl class="asae-ci-modal-fields">';
+		fields.forEach( function ( f ) {
+			dlHtml += '<div class="asae-ci-modal-field"><dt>' + escHtml( f.label ) + '</dt><dd>' + f.value + '</dd></div>';
+		} );
+		dlHtml += '</dl>';
+
+		// Content preview section with rendered / source toggle.
+		var contentHtml = item.content_html || '';
+		var contentSection =
+			'<div class="asae-ci-modal-field">' +
+				'<dt>Post Content</dt>' +
+				'<dd>' +
+					'<div class="asae-ci-content-preview" id="asae-ci-preview-rendered">' + contentHtml + '</div>' +
+					'<pre class="asae-ci-content-source" id="asae-ci-preview-source">' + escHtml( contentHtml ) + '</pre>' +
+					'<button type="button" class="button button-small asae-ci-toggle-source" id="asae-ci-toggle-source-btn">View Source</button>' +
+				'</dd>' +
+			'</div>';
+
+		$modalBody.html(
+			'<div class="asae-ci-modal-body-inner">' +
+				dlHtml +
+				'<dl class="asae-ci-modal-fields">' + contentSection + '</dl>' +
+			'</div>'
+		);
+
+		// Wire up the source/rendered toggle.
+		$( '#asae-ci-toggle-source-btn' ).on( 'click', function () {
+			var $btn      = $( this );
+			var $rendered = $( '#asae-ci-preview-rendered' );
+			var $source   = $( '#asae-ci-preview-source' );
+			var showSrc   = $source.hasClass( 'asae-ci-visible' );
+
+			if ( showSrc ) {
+				$source.removeClass( 'asae-ci-visible' );
+				$rendered.removeClass( 'asae-ci-hidden-view' );
+				$btn.text( 'View Source' );
+			} else {
+				$source.addClass( 'asae-ci-visible' );
+				$rendered.addClass( 'asae-ci-hidden-view' );
+				$btn.text( 'View Rendered' );
+			}
+		} );
+
+		$modal.removeClass( 'asae-ci-hidden' );
+
+		// Move focus to the close button for keyboard/screen reader users.
+		$( '#asae-ci-modal-close' ).trigger( 'focus' );
+	}
+
+	/**
+	 * Closes the preview modal and returns focus to the button that opened it.
+	 */
+	function closePreviewModal() {
+		$modal.addClass( 'asae-ci-hidden' );
+		$modalBody.html( '' );
+		if ( modalTrigger ) {
+			$( modalTrigger ).trigger( 'focus' );
+			modalTrigger = null;
+		}
+	}
+
+	// Delegate: open modal when a Preview button in the dry results table is clicked.
+	$( document ).on( 'click', '.asae-ci-preview-btn', function () {
+		var idx  = parseInt( $( this ).data( 'idx' ), 10 );
+		var item = dryResultsData[ idx ];
+		if ( item ) {
+			openPreviewModal( item, this );
+		}
+	} );
+
+	// Close modal via close button.
+	$( document ).on( 'click', '#asae-ci-modal-close', function () {
+		closePreviewModal();
+	} );
+
+	// Close modal when clicking the backdrop overlay (outside the modal box).
+	$( document ).on( 'click', '#asae-ci-preview-modal', function ( e ) {
+		if ( $( e.target ).is( '#asae-ci-preview-modal' ) ) {
+			closePreviewModal();
+		}
+	} );
+
+	// Close modal on Escape key.
+	$( document ).on( 'keydown', function ( e ) {
+		if ( 27 === e.which && ! $modal.hasClass( 'asae-ci-hidden' ) ) {
+			closePreviewModal();
+		}
+	} );
 
 	// ── Category Review ───────────────────────────────────────────────────────
 
@@ -565,6 +694,7 @@
 		$processedCount.text( '0' );
 		$failedCount.text( '0' );
 		pendingReviewData = null;
+		dryResultsData    = [];
 	}
 
 	/**

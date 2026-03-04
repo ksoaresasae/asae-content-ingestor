@@ -149,7 +149,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<fieldset class="asae-ci-field">
 				<legend><?php esc_html_e( 'Content Limit', 'asae-content-ingestor' ); ?></legend>
 				<p class="description">
-					<?php esc_html_e( 'Maximum number of items to process in this run. Dry Runs are always capped at 50.', 'asae-content-ingestor' ); ?>
+					<?php esc_html_e( 'Maximum number of items to process in this run. Dry Runs are always capped at 20.', 'asae-content-ingestor' ); ?>
 				</p>
 				<div class="asae-ci-radio-group" role="group" aria-labelledby="asae-ci-limit-legend">
 					<?php
@@ -185,7 +185,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 						<?php esc_html_e( 'Dry Run', 'asae-content-ingestor' ); ?>
 					</label>
 					<p class="asae-ci-radio-desc">
-						<?php esc_html_e( 'Preview up to 50 items that would be ingested. No content is created in WordPress.', 'asae-content-ingestor' ); ?>
+						<?php esc_html_e( 'Preview up to 20 items that would be ingested. No content is created in WordPress. Each row includes a detail popup showing the exact content that would be stored.', 'asae-content-ingestor' ); ?>
 					</p>
 
 					<label class="asae-ci-radio-label">
@@ -320,5 +320,35 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		</div>
 	</section>
 
+
+
+	<!-- ── Dry Run Article Preview Modal ─────────────────────────────────── -->
+	<!--
+		Hidden by default. Opened by JS when the admin clicks a "Preview"
+		button in the dry-run results table. Shows the exact content that
+		would be stored in each WordPress field for a given article.
+	-->
+	<div
+		id="asae-ci-preview-modal"
+		class="asae-ci-modal-overlay asae-ci-hidden"
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="asae-ci-modal-title"
+	>
+		<div class="asae-ci-modal" role="document">
+			<div class="asae-ci-modal-header">
+				<h2 id="asae-ci-modal-title"><?php esc_html_e( 'Article Preview', 'asae-content-ingestor' ); ?></h2>
+				<button
+					type="button"
+					id="asae-ci-modal-close"
+					class="asae-ci-modal-close button"
+					aria-label="<?php esc_attr_e( 'Close preview', 'asae-content-ingestor' ); ?>"
+				>&times;</button>
+			</div>
+			<div id="asae-ci-modal-body" class="asae-ci-modal-body">
+				<!-- Populated dynamically by admin.js -->
+			</div>
+		</div>
+	</div>
 
 </div><!-- .asae-ci-wrap -->

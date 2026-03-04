@@ -49,8 +49,9 @@ class ASAE_CI_Parser {
 	 *
 	 * Returned array shape:
 	 * {
-	 *   title            : string   – Article title
+	 *   title            : string   – Article title (sitewide suffix stripped)
 	 *   content          : string   – Body HTML (cleaned, embeds preserved)
+	 *   excerpt          : string   – Explicit excerpt / summary (empty if not found)
 	 *   author           : string   – Author display name (empty if not found)
 	 *   author_bio       : string   – Author bio paragraph extracted from the article
 	 *   author_bio_url   : string   – URL of the author's full profile page (empty if none)
@@ -77,6 +78,7 @@ class ASAE_CI_Parser {
 
 		// Extract each piece of article data.
 		$title          = self::extract_title( $dom, $xpath );
+		$excerpt        = self::extract_excerpt( $dom, $xpath );
 		$authors        = self::extract_authors( $dom, $xpath );
 		$author_context = self::extract_author_context( $dom, $xpath, $url );
 		$date           = self::extract_date( $dom, $xpath );
@@ -96,6 +98,7 @@ class ASAE_CI_Parser {
 		return [
 			'title'            => $title,
 			'content'          => $content,
+			'excerpt'          => $excerpt,
 			'authors'          => $authors,
 			'author'           => implode( ', ', $authors ), // Backward-compat string for reports/dry-run.
 			'author_bio'       => $author_context['bio'],
@@ -112,13 +115,14 @@ class ASAE_CI_Parser {
 	// ── Title Extraction ──────────────────────────────────────────────────────
 
 	/**
-	 * Extracts the article title using a priority-ordered set of strategies.
+	 * Extracts the article title using a priority-ordered set of strategies,
+	 * then strips any sitewide suffix before returning.
 	 *
 	 * Priority:
 	 *  1. og:title meta tag
 	 *  2. First <h1> inside <article> or <main>
 	 *  3. First <h1> on the page
-	 *  4. <title> tag text (trimmed of site name)
+	 *  4. <title> tag text
 	 *
 	 * @param DOMDocument $dom   Parsed DOM.
 	 * @param DOMXPath    $xpath XPath evaluator.
@@ -130,7 +134,7 @@ class ASAE_CI_Parser {
 		if ( $og && $og->length > 0 ) {
 			$val = trim( $og->item(0)->nodeValue );
 			if ( $val ) {
-				return $val;
+				return self::clean_title_suffix( $val );
 			}
 		}
 
@@ -139,7 +143,7 @@ class ASAE_CI_Parser {
 		if ( $h1_article && $h1_article->length > 0 ) {
 			$val = trim( $h1_article->item(0)->textContent );
 			if ( $val ) {
-				return $val;
+				return self::clean_title_suffix( $val );
 			}
 		}
 
@@ -148,17 +152,60 @@ class ASAE_CI_Parser {
 		if ( $h1->length > 0 ) {
 			$val = trim( $h1->item(0)->textContent );
 			if ( $val ) {
-				return $val;
+				return self::clean_title_suffix( $val );
 			}
 		}
 
 		// 4. Page <title>.
 		$title_nodes = $dom->getElementsByTagName( 'title' );
 		if ( $title_nodes->length > 0 ) {
-			return trim( $title_nodes->item(0)->textContent );
+			return self::clean_title_suffix( trim( $title_nodes->item(0)->textContent ) );
 		}
 
 		return '';
+	}
+
+	/**
+	 * Strips a sitewide suffix from a title string.
+	 *
+	 * Many CMSes append the site name (or a section hierarchy) to the end of
+	 * every page title, separated by " | ", " – " (en-dash), or " - ". Since
+	 * the plugin stores the article title separately as the WP post title, the
+	 * trailing site identifier is redundant and should be removed.
+	 *
+	 * Rules applied in priority order:
+	 *  1. Split on " | " — take only the first segment.
+	 *     e.g. "Article Title | Section | Site Name" → "Article Title"
+	 *  2. Split on " – " (en-dash) — take only the first segment.
+	 *  3. Strip a trailing " - Suffix" only when the suffix is ≤ 40 chars and
+	 *     ≤ 4 words (avoids stripping "Year-End Review - Why It Matters").
+	 *
+	 * This function is idempotent: a title with none of these separators is
+	 * returned unchanged, so it is safe to call on any title source.
+	 *
+	 * @param string $title Raw title string.
+	 * @return string Cleaned title.
+	 */
+	private static function clean_title_suffix( string $title ): string {
+		// Rule 1: pipe separator.
+		if ( str_contains( $title, ' | ' ) ) {
+			return trim( explode( ' | ', $title )[0] );
+		}
+
+		// Rule 2: en-dash separator.
+		if ( str_contains( $title, ' – ' ) ) {
+			return trim( explode( ' – ', $title )[0] );
+		}
+
+		// Rule 3: hyphen separator — only strip a short (≤ 4-word) trailing segment.
+		if ( preg_match( '/^(.+) - (.{1,40})$/', $title, $m ) ) {
+			$suffix_words = preg_split( '/\s+/', trim( $m[2] ), -1, PREG_SPLIT_NO_EMPTY );
+			if ( count( $suffix_words ) <= 4 ) {
+				return trim( $m[1] );
+			}
+		}
+
+		return $title;
 	}
 
 	// ── Author Extraction ─────────────────────────────────────────────────────
@@ -446,6 +493,58 @@ class ASAE_CI_Parser {
 		return $origin . rtrim( $base_path, '/' ) . '/' . $href;
 	}
 
+	// ── Excerpt Extraction ────────────────────────────────────────────────────
+
+	/**
+	 * Extracts an explicit article excerpt / summary from the page.
+	 *
+	 * When a source CMS provides a hand-written summary it is always preferable
+	 * to WordPress's auto-excerpt (first N characters of content). This method
+	 * looks for such a summary in priority order:
+	 *
+	 *  1. First element whose class contains "excerpt" — explicit summary block.
+	 *  2. og:description meta — set by most CMSes specifically as an article
+	 *     summary shown in social-media previews.
+	 *  3. meta[name="description"] — general page description fallback.
+	 *
+	 * Returns an empty string if no explicit excerpt is found, in which case
+	 * WordPress will generate its own auto-excerpt from the post content.
+	 *
+	 * @param DOMDocument $dom   Parsed DOM.
+	 * @param DOMXPath    $xpath XPath evaluator.
+	 * @return string Plain-text excerpt, or empty string.
+	 */
+	private static function extract_excerpt( DOMDocument $dom, DOMXPath $xpath ): string {
+		// 1. Explicit excerpt element on the page.
+		$el = $xpath->query( '//*[contains(@class,"excerpt")]' );
+		if ( $el && $el->length > 0 ) {
+			$val = trim( $el->item(0)->textContent );
+			if ( $val ) {
+				return sanitize_textarea_field( $val );
+			}
+		}
+
+		// 2. og:description meta tag.
+		$og_desc = $xpath->query( '//meta[@property="og:description"]/@content' );
+		if ( $og_desc && $og_desc->length > 0 ) {
+			$val = trim( $og_desc->item(0)->nodeValue );
+			if ( $val ) {
+				return sanitize_textarea_field( $val );
+			}
+		}
+
+		// 3. Standard meta description.
+		$meta_desc = $xpath->query( '//meta[@name="description"]/@content' );
+		if ( $meta_desc && $meta_desc->length > 0 ) {
+			$val = trim( $meta_desc->item(0)->nodeValue );
+			if ( $val ) {
+				return sanitize_textarea_field( $val );
+			}
+		}
+
+		return '';
+	}
+
 	// ── Date Extraction ───────────────────────────────────────────────────────
 
 	/**
@@ -583,34 +682,33 @@ class ASAE_CI_Parser {
 			}
 		}
 
-		// 4. JSON-LD keywords / articleSection.
+		// 4. JSON-LD keywords / articleSection — handled recursively so that
+		//    @graph arrays and nested Article/NewsArticle entities are all
+		//    searched, regardless of how the CMS structures its output.
 		$scripts = $xpath->query( '//script[@type="application/ld+json"]' );
 		if ( $scripts ) {
 			foreach ( $scripts as $script ) {
 				$json = json_decode( trim( $script->textContent ), true );
 				if ( is_array( $json ) ) {
-					foreach ( [ 'keywords', 'articleSection' ] as $field ) {
-						if ( isset( $json[ $field ] ) ) {
-							$val = $json[ $field ];
-							if ( is_string( $val ) ) {
-								// Keywords are often comma-separated.
-								$parts = array_map( 'trim', explode( ',', $val ) );
-								$terms = array_merge( $terms, array_filter( $parts ) );
-							} elseif ( is_array( $val ) ) {
-								$terms = array_merge( $terms, array_filter( array_map( 'trim', $val ) ) );
-							}
-						}
-					}
+					self::collect_jsonld_taxonomy_values( $json, $terms );
 				}
 			}
 		}
 
 		// 5. Common taxonomy list elements.
+		// The first set of XPaths targets <a> link children (traditional WP tag/cat links).
+		// The second set targets non-link badge elements (<div>, <span>) used by some
+		// themes to display category labels without making them hyperlinks.
 		$tag_list_xpaths = [
+			// Link-based patterns.
 			'//*[contains(@class,"tags")]//a',
 			'//*[contains(@class,"categories")]//a',
 			'//*[contains(@class,"tag-list")]//a',
 			'//*[@itemprop="keywords"]',
+			// Non-link badge patterns (direct children only — avoids over-capturing).
+			'//*[contains(@class,"article-categories")]/*[not(descendant-or-self::a)]',
+			'//*[contains(@class,"article-tags")]/*[not(descendant-or-self::a)]',
+			'//*[contains(@class,"post-categories")]/*[not(descendant-or-self::a)]',
 		];
 		foreach ( $tag_list_xpaths as $expr ) {
 			$nodes = $xpath->query( $expr );
@@ -626,6 +724,58 @@ class ASAE_CI_Parser {
 
 		// Deduplicate and return.
 		return array_values( array_unique( array_filter( $terms ) ) );
+	}
+
+	/**
+	 * Recursively collects taxonomy values (keywords, articleSection) from a
+	 * decoded JSON-LD data structure.
+	 *
+	 * Handles three common JSON-LD shapes:
+	 *  - Root object: {"@type":"Article","articleSection":["A","B"]}
+	 *  - @graph array: {"@graph":[{"@type":"Article","articleSection":["A","B"]},...]}
+	 *  - Nested entity: {"@type":"WebPage","mainEntity":{"@type":"Article",...}}
+	 *
+	 * @param mixed  $data  Decoded JSON (array or scalar).
+	 * @param array  $terms Accumulator array — values are appended in place.
+	 * @return void
+	 */
+	private static function collect_jsonld_taxonomy_values( mixed $data, array &$terms ): void {
+		if ( ! is_array( $data ) ) {
+			return;
+		}
+
+		// Expand @graph arrays first.
+		if ( isset( $data['@graph'] ) && is_array( $data['@graph'] ) ) {
+			foreach ( $data['@graph'] as $item ) {
+				self::collect_jsonld_taxonomy_values( $item, $terms );
+			}
+		}
+
+		// Collect taxonomy values at this level.
+		foreach ( [ 'keywords', 'articleSection' ] as $field ) {
+			if ( isset( $data[ $field ] ) ) {
+				$val = $data[ $field ];
+				if ( is_string( $val ) ) {
+					// keywords are often comma-separated.
+					$parts = array_map( 'trim', explode( ',', $val ) );
+					$terms = array_merge( $terms, array_filter( $parts ) );
+				} elseif ( is_array( $val ) ) {
+					$terms = array_merge( $terms, array_filter( array_map( 'trim', $val ) ) );
+				}
+			}
+		}
+
+		// Recurse into nested entity objects (e.g. mainEntity, hasPart, etc.).
+		// Only recurse into values that look like typed entities (have @type)
+		// to avoid descending into primitive arrays like articleSection itself.
+		foreach ( $data as $key => $value ) {
+			if ( in_array( $key, [ '@graph', 'keywords', 'articleSection' ], true ) ) {
+				continue; // Already handled above.
+			}
+			if ( is_array( $value ) && isset( $value['@type'] ) ) {
+				self::collect_jsonld_taxonomy_values( $value, $terms );
+			}
+		}
 	}
 
 	// ── Featured Image Extraction ─────────────────────────────────────────────
@@ -799,6 +949,10 @@ class ASAE_CI_Parser {
 			// inside the article body are preserved. The global site header is
 			// already outside the content node and never imported.
 			'//div[@id="asae-ci-wrap"]/header',
+			// Strip the article's own title, which is a direct child of the
+			// content wrapper. Post title is stored separately in WP, so the
+			// in-body h1 is always redundant.
+			'//div[@id="asae-ci-wrap"]/h1',
 			'//footer',
 			'//aside',
 			'//form',
@@ -807,6 +961,13 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"author-info")]',
 			'//*[contains(@class,"author-card")]',
 			'//*[contains(@class,"author-bio")]',
+			// Article-level metadata chrome (author/date byline, categories line).
+			// These appear as direct or shallow children of the content node on
+			// many WordPress themes and are redundant to the WP post meta fields.
+			'//*[contains(@class,"entry-meta")]',
+			'//*[contains(@class,"post-meta")]',
+			'//*[contains(@class,"article-meta")]',
+			'//*[contains(@class,"byline")]',
 			// <noscript> fallback blocks — always browser/JS chrome, never article content.
 			// This catches Disqus "Please enable JavaScript" notices and similar
 			// embedded service fallbacks that appear as siblings of their script tags.
@@ -821,6 +982,13 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"advertisement")]',
 			'//*[contains(@class,"leaderboard")]',
 			'//*[contains(@class,"sharedaddy")]',
+			// Social sharing widgets — AddToAny, Jetpack, and generic patterns.
+			'//*[contains(@class,"addtoany_content")]',
+			'//*[contains(@class,"a2a_kit")]',
+			'//*[contains(@class,"share-buttons")]',
+			'//*[contains(@class,"social-share")]',
+			'//*[contains(@class,"entry-share")]',
+			'//*[contains(@class,"post-share")]',
 			// "Read These Next" / related-post link lists embedded in articles.
 			'//*[contains(@class,"link-list")]',
 			'//*[contains(@class,"related-posts")]',

@@ -429,8 +429,8 @@ class ASAE_CI_Scheduler {
 				$preview['is_duplicate'] ? 'Would be skipped (duplicate).' : '',
 				$preview['post_title'], $preview['author'] ?? '', $preview['date'] ?? '' );
 
-			// Stop once we have 50 genuinely new (non-duplicate) preview items.
-			if ( $new_count >= 50 ) {
+			// Stop once we have 20 genuinely new (non-duplicate) preview items.
+			if ( $new_count >= 20 ) {
 				$queue = [];
 				break;
 			}
@@ -638,7 +638,7 @@ class ASAE_CI_Scheduler {
 
 	/**
 	 * Converts a batch_limit string value to an integer.
-	 * 'all' returns 0 (no limit). For Dry Runs the caller enforces a cap of 50.
+	 * 'all' returns 0 (no limit). For Dry Runs the caller enforces a cap of 20.
 	 *
 	 * @param string $batch_limit '10', '50', '100', or 'all'.
 	 * @param string $run_type    'dry' or 'active'.
@@ -646,7 +646,7 @@ class ASAE_CI_Scheduler {
 	 */
 	public static function batch_limit_to_int( string $batch_limit, string $run_type = 'active' ): int {
 		if ( 'dry' === $run_type ) {
-			return 50;
+			return 20;
 		}
 		if ( 'all' === $batch_limit ) {
 			return 0;

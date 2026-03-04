@@ -57,6 +57,7 @@ class ASAE_CI_Ingester {
 		$title   = sanitize_text_field( $parsed_data['title']   ?? '' ) ?: __( '(Untitled)', 'asae-content-ingestor' );
 		$content = wp_kses_post( $parsed_data['content'] ?? '' );
 		$date    = $parsed_data['date'] ?? '';
+		$excerpt = sanitize_textarea_field( $parsed_data['excerpt'] ?? '' );
 
 		// Build the post array.
 		$post_arr = [
@@ -65,6 +66,11 @@ class ASAE_CI_Ingester {
 			'post_status'  => 'publish',
 			'post_type'    => sanitize_key( $post_type ),
 		];
+
+		// Apply explicit excerpt when one was found; otherwise WP auto-generates it.
+		if ( $excerpt ) {
+			$post_arr['post_excerpt'] = $excerpt;
+		}
 
 		// Apply publication date if one was found.
 		if ( $date ) {
@@ -139,7 +145,28 @@ class ASAE_CI_Ingester {
 		// Images are processed here — before the category check — so that
 		// posts saved as drafts (pending category review) still get their
 		// images imported and their content src attributes updated.
-		$updated_content = self::process_inline_images( $post_id, $content, $parsed_data['inline_images'] ?? [] );
+		//
+		// Before processing, strip any inline <img> element that is the same
+		// visual as the featured image (possibly at a different generated size,
+		// e.g. "photo.jpg" vs "photo-800x480.jpg"). Leaving it in would cause
+		// the same image to appear twice on the rendered post: once from the
+		// WP thumbnail and once inline in the content.
+		$featured_url    = $parsed_data['featured_image'] ?? '';
+		$inline_images   = $parsed_data['inline_images']  ?? [];
+		$body_content    = $content;
+
+		if ( $featured_url ) {
+			$feat_base     = self::normalize_image_base( $featured_url );
+			$body_content  = self::remove_featured_image_from_content( $body_content, $featured_url );
+			// Also remove the variant URL from the inline download list so we
+			// don't download it as a second media attachment.
+			$inline_images = array_values( array_filter(
+				$inline_images,
+				fn( $img_url ) => self::normalize_image_base( $img_url ) !== $feat_base
+			) );
+		}
+
+		$updated_content = self::process_inline_images( $post_id, $body_content, $inline_images );
 		if ( $updated_content !== $content ) {
 			wp_update_post( [
 				'ID'           => $post_id,
@@ -148,7 +175,6 @@ class ASAE_CI_Ingester {
 		}
 
 		// Download and set the featured image.
-		$featured_url = $parsed_data['featured_image'] ?? '';
 		if ( $featured_url ) {
 			$attachment_id = self::download_and_attach_image( $featured_url, $post_id, $title );
 			if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
@@ -195,6 +221,18 @@ class ASAE_CI_Ingester {
 		// Preview which category would be matched (read-only – no post exists yet).
 		$matched_category = self::find_category_match( $tags, $title, $post_type );
 
+		// Compute the inline image count after removing featured-image duplicates,
+		// to match what the active run would actually download.
+		$featured_url  = $parsed_data['featured_image'] ?? '';
+		$inline_images = $parsed_data['inline_images']  ?? [];
+		if ( $featured_url ) {
+			$feat_base     = self::normalize_image_base( $featured_url );
+			$inline_images = array_values( array_filter(
+				$inline_images,
+				fn( $img_url ) => self::normalize_image_base( $img_url ) !== $feat_base
+			) );
+		}
+
 		return [
 			'source_url'       => $source_url,
 			'post_title'       => $title,
@@ -202,10 +240,14 @@ class ASAE_CI_Ingester {
 			'author'           => sanitize_text_field( $parsed_data['author'] ?? '' ),
 			'date'             => $parsed_data['date'] ?? '',
 			'tags'             => $tags,
-			'has_featured'     => ! empty( $parsed_data['featured_image'] ),
-			'inline_images'    => count( $parsed_data['inline_images'] ?? [] ),
+			'has_featured'     => ! empty( $featured_url ),
+			'inline_images'    => count( $inline_images ),
 			'is_duplicate'     => $is_duplicate,
 			'category_match'   => $matched_category,
+			'excerpt'          => sanitize_textarea_field( $parsed_data['excerpt'] ?? '' ),
+			// Full content HTML included for the dry-run detail popup (wp_kses_post
+			// sanitises to the same set of tags used during active ingestion).
+			'content_html'     => wp_kses_post( $parsed_data['content'] ?? '' ),
 		];
 	}
 
@@ -233,6 +275,90 @@ class ASAE_CI_Ingester {
 		// phpcs:enable
 
 		return (int) $count > 0;
+	}
+
+	// ── Image Helpers ─────────────────────────────────────────────────────────
+
+	/**
+	 * Normalises an image URL to a base form suitable for deduplication.
+	 *
+	 * Strips the query string, fragment, and any WordPress-generated size
+	 * suffix (e.g. "-800x480" before the extension) so that different size
+	 * variants of the same source image compare as equal.
+	 *
+	 * Examples:
+	 *   https://example.com/image-800x480.jpg?v=1  →  https://example.com/image.jpg
+	 *   https://example.com/photo.jpg               →  https://example.com/photo.jpg
+	 *
+	 * @param string $url Absolute image URL.
+	 * @return string Normalised base URL.
+	 */
+	private static function normalize_image_base( string $url ): string {
+		$base = strtok( $url, '?#' ); // Strip query string and fragment.
+		// Strip WordPress image size suffix: -NNNxNNN before the file extension.
+		return (string) preg_replace( '/-\d+x\d+(\.[a-zA-Z]{2,5})$/', '$1', $base );
+	}
+
+	/**
+	 * Removes <img> elements from a block of HTML whose normalised src matches
+	 * the normalised base URL of the featured image.
+	 *
+	 * WordPress sets the featured image as a post thumbnail displayed outside
+	 * the post content; any inline image in the body that is the same photo
+	 * (possibly at a different generated size) would result in the image
+	 * appearing twice on the rendered page. This method strips such duplicates
+	 * from the content HTML before it is stored.
+	 *
+	 * @param string $content      Post content HTML.
+	 * @param string $featured_url Absolute URL of the featured image.
+	 * @return string Updated content HTML with duplicate images removed.
+	 */
+	private static function remove_featured_image_from_content( string $content, string $featured_url ): string {
+		if ( empty( $content ) || empty( $featured_url ) ) {
+			return $content;
+		}
+
+		$feat_base = self::normalize_image_base( $featured_url );
+		if ( ! $feat_base ) {
+			return $content;
+		}
+
+		$dom = new DOMDocument();
+		libxml_use_internal_errors( true );
+		$dom->loadHTML( '<?xml encoding="UTF-8"><div>' . $content . '</div>' );
+		libxml_clear_errors();
+
+		$imgs = $dom->getElementsByTagName( 'img' );
+		$to_remove = [];
+		foreach ( $imgs as $img ) {
+			$src = trim( $img->getAttribute( 'src' ) );
+			if ( $src && self::normalize_image_base( $src ) === $feat_base ) {
+				$to_remove[] = $img;
+			}
+		}
+		foreach ( $to_remove as $img ) {
+			// Remove the containing <figure> if the img is its only meaningful child.
+			$parent = $img->parentNode;
+			if ( $parent && 'figure' === strtolower( $parent->nodeName ) ) {
+				$parent->parentNode?->removeChild( $parent );
+			} else {
+				$parent?->removeChild( $img );
+			}
+		}
+
+		// Re-serialize only if something was actually removed.
+		if ( empty( $to_remove ) ) {
+			return $content;
+		}
+
+		$wrapper = $dom->getElementsByTagName( 'div' )->item( 0 );
+		$inner   = '';
+		if ( $wrapper ) {
+			foreach ( $wrapper->childNodes as $child ) {
+				$inner .= $dom->saveHTML( $child );
+			}
+		}
+		return trim( $inner );
 	}
 
 	// ── Image Handling ────────────────────────────────────────────────────────
