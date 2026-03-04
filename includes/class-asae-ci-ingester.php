@@ -817,8 +817,21 @@ class ASAE_CI_Ingester {
 	 * Makes at most one HTTP request (no recursive following).
 	 *
 	 * Extraction priority:
-	 *  Bio  : og:description → meta[name="description"]
-	 *  Photo: og:image → <img> inside known author-block class patterns
+	 *
+	 *  Bio  : 1. JSON-LD Person entity "description" field (most structured)
+	 *         2. itemprop="description" element text
+	 *         3. Explicit bio sub-element classes (author-description,
+	 *            wp-block-post-author__bio, user-description, etc.)
+	 *         4. First <p> inside a recognised author block container
+	 *         5. og:description (fallback — often the site tagline, not a bio)
+	 *         6. meta[name="description"]
+	 *
+	 *  Photo: 1. JSON-LD Person entity "image" field
+	 *         2. img[itemprop="image"] or itemprop="image" containing img
+	 *         3. <img class="avatar"> excluding default Gravatar placeholder
+	 *         4. Recognised avatar/photo sub-element class patterns
+	 *         5. Any <img> inside a recognised author block container
+	 *         6. og:image (fallback — often the article or site image)
 	 *
 	 * @param string $bio_url Absolute URL of the author's profile page.
 	 * @return array { bio: string, photo_url: string }
@@ -841,27 +854,173 @@ class ASAE_CI_Ingester {
 		}
 
 		$dom = new DOMDocument();
-		@$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
+		libxml_use_internal_errors( true );
+		$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
+		libxml_clear_errors();
 		$xpath = new DOMXPath( $dom );
 
-		// Bio: og:description first, then meta description.
-		$og_desc = $xpath->query( '//meta[@property="og:description"]/@content' );
-		if ( $og_desc && $og_desc->length ) {
-			$result['bio'] = sanitize_textarea_field( $og_desc->item( 0 )->nodeValue );
-		} else {
+		// ── Bio extraction ────────────────────────────────────────────────────
+
+		// Priority 1: JSON-LD Person entity "description".
+		$ld_scripts = $xpath->query( '//script[@type="application/ld+json"]' );
+		if ( $ld_scripts ) {
+			foreach ( $ld_scripts as $script ) {
+				$json = json_decode( trim( $script->nodeValue ), true );
+				if ( ! is_array( $json ) ) {
+					continue;
+				}
+				$person = self::find_jsonld_person( $json );
+				if ( $person ) {
+					if ( ! empty( $person['description'] ) ) {
+						$result['bio'] = sanitize_textarea_field( $person['description'] );
+					}
+					// Extract photo from JSON-LD while we're here.
+					if ( empty( $result['photo_url'] ) ) {
+						$img = $person['image'] ?? null;
+						if ( is_string( $img ) && $img ) {
+							$result['photo_url'] = esc_url_raw( $img );
+						} elseif ( is_array( $img ) ) {
+							$src = $img['url'] ?? $img['contentUrl'] ?? '';
+							if ( $src ) {
+								$result['photo_url'] = esc_url_raw( $src );
+							}
+						}
+					}
+					if ( $result['bio'] ) {
+						break;
+					}
+				}
+			}
+		}
+
+		// Priority 2: itemprop="description".
+		if ( empty( $result['bio'] ) ) {
+			$nodes = $xpath->query( '//*[@itemprop="description"]' );
+			if ( $nodes && $nodes->length ) {
+				$text = trim( $nodes->item( 0 )->textContent );
+				if ( $text ) {
+					$result['bio'] = sanitize_textarea_field( $text );
+				}
+			}
+		}
+
+		// Priority 3: explicit bio sub-element class patterns.
+		if ( empty( $result['bio'] ) ) {
+			$bio_subclasses = [
+				'author-description',
+				'author__description',
+				'wp-block-post-author__bio',
+				'user-description',
+				'author-bio-text',
+				'bio-text',
+			];
+			foreach ( $bio_subclasses as $cls ) {
+				$nodes = $xpath->query( '//*[contains(@class,"' . $cls . '")]' );
+				if ( $nodes && $nodes->length ) {
+					$text = trim( $nodes->item( 0 )->textContent );
+					if ( $text ) {
+						$result['bio'] = sanitize_textarea_field( $text );
+						break;
+					}
+				}
+			}
+		}
+
+		// Priority 4: first <p> inside a recognised author block container.
+		if ( empty( $result['bio'] ) ) {
+			$block_classes = [
+				'author-block', 'author-info', 'author-card', 'author-bio',
+				'author-box', 'post-author', 'author-section', 'author-profile',
+				'author-widget', 'contributor-box', 'wp-block-post-author',
+			];
+			foreach ( $block_classes as $cls ) {
+				$paras = $xpath->query( '//*[contains(@class,"' . $cls . '")]//p' );
+				if ( $paras && $paras->length ) {
+					$text = trim( $paras->item( 0 )->textContent );
+					if ( $text ) {
+						$result['bio'] = sanitize_textarea_field( $text );
+						break;
+					}
+				}
+			}
+		}
+
+		// Priority 5: og:description (often site tagline — last resort).
+		if ( empty( $result['bio'] ) ) {
+			$og_desc = $xpath->query( '//meta[@property="og:description"]/@content' );
+			if ( $og_desc && $og_desc->length ) {
+				$result['bio'] = sanitize_textarea_field( $og_desc->item( 0 )->nodeValue );
+			}
+		}
+
+		// Priority 6: meta description.
+		if ( empty( $result['bio'] ) ) {
 			$meta_desc = $xpath->query( '//meta[@name="description"]/@content' );
 			if ( $meta_desc && $meta_desc->length ) {
 				$result['bio'] = sanitize_textarea_field( $meta_desc->item( 0 )->nodeValue );
 			}
 		}
 
-		// Photo: og:image first.
-		$og_img = $xpath->query( '//meta[@property="og:image"]/@content' );
-		if ( $og_img && $og_img->length ) {
-			$result['photo_url'] = esc_url_raw( $og_img->item( 0 )->nodeValue );
-		} else {
-			// Fall back to image inside known author block class patterns.
-			$block_classes = [ 'author-block', 'author-info', 'author-card', 'author-bio' ];
+		// ── Photo extraction ──────────────────────────────────────────────────
+
+		// Priority 1: JSON-LD already handled above during bio extraction.
+
+		// Priority 2: img[itemprop="image"] or itemprop="image" containing img.
+		if ( empty( $result['photo_url'] ) ) {
+			$nodes = $xpath->query( '//img[@itemprop="image"]/@src | //*[@itemprop="image"]//img/@src' );
+			if ( $nodes && $nodes->length ) {
+				$src = trim( $nodes->item( 0 )->nodeValue );
+				if ( $src ) {
+					$result['photo_url'] = esc_url_raw( $src );
+				}
+			}
+		}
+
+		// Priority 3: <img class="avatar"> — standard WP Gravatar class.
+		// Skip the default/fallback Gravatar (all-zero MD5 hash).
+		if ( empty( $result['photo_url'] ) ) {
+			$avatars = $xpath->query( '//img[contains(@class,"avatar")]/@src' );
+			if ( $avatars && $avatars->length ) {
+				foreach ( $avatars as $attr ) {
+					$src = trim( $attr->nodeValue );
+					// Skip default Gravatar placeholder (MD5 of empty string or zeros).
+					if ( $src && false === strpos( $src, 'gravatar.com/avatar/00000' )
+						&& false === strpos( $src, 'gravatar.com/avatar/d41d' ) ) {
+						$result['photo_url'] = esc_url_raw( $src );
+						break;
+					}
+				}
+			}
+		}
+
+		// Priority 4: recognised avatar/photo sub-element class patterns.
+		if ( empty( $result['photo_url'] ) ) {
+			$photo_xpaths = [
+				'//*[contains(@class,"wp-block-post-author__avatar")]//img/@src',
+				'//*[contains(@class,"author-avatar")]//img/@src',
+				'//*[contains(@class,"author-photo")]//img/@src',
+				'//*[contains(@class,"author-image")]//img/@src',
+				'//*[contains(@class,"user-avatar")]//img/@src',
+			];
+			foreach ( $photo_xpaths as $expr ) {
+				$nodes = $xpath->query( $expr );
+				if ( $nodes && $nodes->length ) {
+					$src = trim( $nodes->item( 0 )->nodeValue );
+					if ( $src ) {
+						$result['photo_url'] = esc_url_raw( $src );
+						break;
+					}
+				}
+			}
+		}
+
+		// Priority 5: any <img> inside a recognised author block container.
+		if ( empty( $result['photo_url'] ) ) {
+			$block_classes = [
+				'author-block', 'author-info', 'author-card', 'author-bio',
+				'author-box', 'post-author', 'author-section', 'author-profile',
+				'author-widget', 'contributor-box', 'wp-block-post-author',
+			];
 			foreach ( $block_classes as $cls ) {
 				$imgs = $xpath->query( '//*[contains(@class,"' . $cls . '")]//img/@src' );
 				if ( $imgs && $imgs->length ) {
@@ -874,7 +1033,59 @@ class ASAE_CI_Ingester {
 			}
 		}
 
+		// Priority 6: og:image (often the article or site image, not a headshot).
+		if ( empty( $result['photo_url'] ) ) {
+			$og_img = $xpath->query( '//meta[@property="og:image"]/@content' );
+			if ( $og_img && $og_img->length ) {
+				$result['photo_url'] = esc_url_raw( $og_img->item( 0 )->nodeValue );
+			}
+		}
+
 		return $result;
+	}
+
+	/**
+	 * Recursively searches a decoded JSON-LD object for a Person entity.
+	 *
+	 * Handles @graph arrays, flat top-level objects, and nested typed entities
+	 * (e.g. Yoast/RankMath WebPage → author → Person).
+	 *
+	 * @param array $data Decoded JSON-LD object.
+	 * @return array|null Person object array, or null if not found.
+	 */
+	private static function find_jsonld_person( array $data ): ?array {
+		// Expand @graph arrays.
+		if ( isset( $data['@graph'] ) && is_array( $data['@graph'] ) ) {
+			foreach ( $data['@graph'] as $item ) {
+				if ( ! is_array( $item ) ) {
+					continue;
+				}
+				$found = self::find_jsonld_person( $item );
+				if ( null !== $found ) {
+					return $found;
+				}
+			}
+		}
+
+		// Direct Person type.
+		if ( isset( $data['@type'] ) && $data['@type'] === 'Person' ) {
+			return $data;
+		}
+
+		// Recurse into nested typed entities (e.g. mainEntity, author, etc.).
+		foreach ( $data as $key => $value ) {
+			if ( '@graph' === $key ) {
+				continue;
+			}
+			if ( is_array( $value ) && ! empty( $value['@type'] ) ) {
+				$found = self::find_jsonld_person( $value );
+				if ( null !== $found ) {
+					return $found;
+				}
+			}
+		}
+
+		return null;
 	}
 
 	/**

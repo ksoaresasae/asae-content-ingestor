@@ -65,7 +65,7 @@ class ASAE_CI_Admin {
 	public static function register_menus(): void {
 		add_management_page(
 			__( 'ASAE Content Ingestor', 'asae-content-ingestor' ),
-			__( 'Content Ingestor', 'asae-content-ingestor' ),
+			__( 'ASAE Content Ingestor', 'asae-content-ingestor' ),
 			'manage_options',
 			'asae-content-ingestor',
 			[ __CLASS__, 'render_main_page' ]

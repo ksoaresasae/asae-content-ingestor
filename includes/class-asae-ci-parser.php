@@ -379,12 +379,25 @@ class ASAE_CI_Parser {
 	 * the author bio paragraph, a link to the author's full profile page (if
 	 * present), and the author photo URL (if present).
 	 *
-	 * Looks in:
-	 *  1. <a rel="author"> — profile link on or near the byline.
-	 *  2. An element with class "author-block" or "author-info" — a common
-	 *     pattern where CMSes embed an author card at the end of an article.
-	 *     Within that block it looks for the first <p> (bio text), the first
-	 *     <img> (photo), and any <a> whose href looks like a profile page.
+	 * Three sources are checked in priority order:
+	 *
+	 *  1. JSON-LD structured data — the most reliable source when present.
+	 *     The article's LD+JSON often carries an author object with a URL,
+	 *     description, and image. find_jsonld_author() handles @graph arrays
+	 *     and nested entity shapes (Yoast, RankMath, etc.).
+	 *
+	 *  2. <a rel="author"> — semantic profile link on or near the byline.
+	 *     Used as a fallback source for the bio_url only.
+	 *
+	 *  3. Inline author block element — CMS-rendered author card at the end
+	 *     of the article. An expanded list of class patterns covers standard
+	 *     WP themes, Gutenberg blocks, and custom BEM-named components.
+	 *     Within the block:
+	 *      - Bio: looks for an explicit description sub-element first, then
+	 *        the first <p> as a fallback.
+	 *      - Photo: prefers <img class="avatar"> (WP Gravatar standard) over
+	 *        any first <img>.
+	 *      - Profile link: any non-anchor, non-search <a> href.
 	 *
 	 * @param DOMDocument $dom      Parsed DOM.
 	 * @param DOMXPath    $xpath    XPath evaluator.
@@ -396,21 +409,67 @@ class ASAE_CI_Parser {
 		$bio_url   = '';
 		$photo_url = '';
 
-		// 1. <a rel="author"> — the most semantic signal for a profile link.
-		$rel_author = $xpath->query( '//a[@rel="author"]/@href' );
-		if ( $rel_author && $rel_author->length > 0 ) {
-			$href = trim( $rel_author->item(0)->nodeValue );
-			if ( $href ) {
-				$bio_url = self::resolve_author_url( $href, $page_url );
+		// 1. JSON-LD — most structured source when present on the page.
+		$scripts = $xpath->query( '//script[@type="application/ld+json"]' );
+		if ( $scripts ) {
+			foreach ( $scripts as $script ) {
+				$json = json_decode( trim( $script->textContent ), true );
+				if ( ! is_array( $json ) ) {
+					continue;
+				}
+				$author_obj = self::find_jsonld_author( $json );
+				if ( $author_obj ) {
+					if ( empty( $bio_url ) && ! empty( $author_obj['url'] ) ) {
+						$bio_url = self::resolve_author_url( (string) $author_obj['url'], $page_url );
+					}
+					if ( empty( $bio ) && ! empty( $author_obj['description'] ) ) {
+						$bio = sanitize_textarea_field( (string) $author_obj['description'] );
+					}
+					if ( empty( $photo_url ) ) {
+						$img = $author_obj['image'] ?? null;
+						if ( is_string( $img ) && $img ) {
+							$photo_url = self::resolve_image_url( $img, $page_url );
+						} elseif ( is_array( $img ) ) {
+							// Handles both {url:...} and {contentUrl:...} shapes.
+							$src = (string) ( $img['url'] ?? $img['contentUrl'] ?? '' );
+							if ( $src ) {
+								$photo_url = self::resolve_image_url( $src, $page_url );
+							}
+						}
+					}
+					// All three fields found — no need to check more scripts.
+					if ( $bio_url && $bio && $photo_url ) {
+						break;
+					}
+				}
 			}
 		}
 
-		// 2. Author block element — common CMS pattern for an inline author card.
+		// 2. <a rel="author"> — semantic profile link for bio_url.
+		if ( empty( $bio_url ) ) {
+			$rel_author = $xpath->query( '//a[@rel="author"]/@href' );
+			if ( $rel_author && $rel_author->length > 0 ) {
+				$href = trim( $rel_author->item(0)->nodeValue );
+				if ( $href ) {
+					$bio_url = self::resolve_author_url( $href, $page_url );
+				}
+			}
+		}
+
+		// 3. Inline author block element — expanded class list for broader
+		//    theme coverage (standard WP themes, Gutenberg, BEM components).
 		$block_xpaths = [
 			'//*[contains(@class,"author-block")]',
 			'//*[contains(@class,"author-info")]',
 			'//*[contains(@class,"author-card")]',
 			'//*[contains(@class,"author-bio")]',
+			'//*[contains(@class,"author-box")]',
+			'//*[contains(@class,"post-author")]',
+			'//*[contains(@class,"author-section")]',
+			'//*[contains(@class,"author-profile")]',
+			'//*[contains(@class,"author-widget")]',
+			'//*[contains(@class,"contributor-box")]',
+			'//*[contains(@class,"wp-block-post-author")]',
 		];
 
 		foreach ( $block_xpaths as $expr ) {
@@ -420,28 +479,59 @@ class ASAE_CI_Parser {
 			}
 			$block = $blocks->item(0);
 
-			// Bio text: first <p> inside the block.
-			$paras = $xpath->query( './/p', $block );
-			if ( $paras && $paras->length > 0 ) {
-				$val = trim( $paras->item(0)->textContent );
-				if ( $val ) {
-					$bio = $val;
+			// Bio text: prefer an explicit description sub-element over
+			// the first generic <p> to avoid picking up the author's name
+			// or job title as the bio.
+			if ( empty( $bio ) ) {
+				$desc_classes = [
+					'author-description', 'author__description',
+					'wp-block-post-author__bio', 'user-description',
+				];
+				foreach ( $desc_classes as $cls ) {
+					$desc_el = $xpath->query( './/*[contains(@class,"' . $cls . '")]', $block );
+					if ( $desc_el && $desc_el->length > 0 ) {
+						$val = trim( $desc_el->item(0)->textContent );
+						if ( $val && strlen( $val ) > 20 ) {
+							$bio = sanitize_textarea_field( $val );
+							break;
+						}
+					}
+				}
+				// Fallback: first <p> inside the block.
+				if ( empty( $bio ) ) {
+					$paras = $xpath->query( './/p', $block );
+					if ( $paras && $paras->length > 0 ) {
+						$val = trim( $paras->item(0)->textContent );
+						if ( $val ) {
+							$bio = sanitize_textarea_field( $val );
+						}
+					}
 				}
 			}
 
-			// Photo: first <img> inside the block.
-			if ( ! $photo_url ) {
-				$imgs = $xpath->query( './/img/@src', $block );
-				if ( $imgs && $imgs->length > 0 ) {
-					$src = trim( $imgs->item(0)->nodeValue );
+			// Photo: prefer <img class="avatar"> (WP Gravatar standard) then
+			// any img in the block.
+			if ( empty( $photo_url ) ) {
+				$avatar_imgs = $xpath->query( './/img[contains(@class,"avatar")]/@src', $block );
+				if ( $avatar_imgs && $avatar_imgs->length > 0 ) {
+					$src = trim( $avatar_imgs->item(0)->nodeValue );
 					if ( $src ) {
 						$photo_url = self::resolve_image_url( $src, $page_url );
+					}
+				}
+				if ( empty( $photo_url ) ) {
+					$imgs = $xpath->query( './/img/@src', $block );
+					if ( $imgs && $imgs->length > 0 ) {
+						$src = trim( $imgs->item(0)->nodeValue );
+						if ( $src ) {
+							$photo_url = self::resolve_image_url( $src, $page_url );
+						}
 					}
 				}
 			}
 
 			// Profile link: any <a> with a non-anchor, non-search href.
-			if ( ! $bio_url ) {
+			if ( empty( $bio_url ) ) {
 				$links = $xpath->query( './/a/@href', $block );
 				if ( $links ) {
 					foreach ( $links as $href_node ) {
@@ -463,6 +553,65 @@ class ASAE_CI_Parser {
 			'bio_url'   => $bio_url,
 			'photo_url' => $photo_url,
 		];
+	}
+
+	/**
+	 * Recursively searches a decoded JSON-LD structure for an author entity
+	 * and returns its data array.
+	 *
+	 * Handles three common shapes produced by Yoast SEO, RankMath, and other
+	 * structured-data plugins:
+	 *  - Root object with "author": {"@type":"Person", ...}
+	 *  - @graph array containing an Article node with an "author" sub-object
+	 *  - Nested entities (e.g. WebPage → mainEntity → Article → author)
+	 *
+	 * Returns the first author object found (multi-author articles are handled
+	 * by returning the first element of an author array).
+	 *
+	 * @param array $data Decoded JSON-LD data (may be a single entity or @graph).
+	 * @return array|null Author data array (may contain url, description, image), or null.
+	 */
+	private static function find_jsonld_author( array $data ): ?array {
+		// Expand @graph arrays — Yoast and RankMath emit all entities here.
+		if ( isset( $data['@graph'] ) && is_array( $data['@graph'] ) ) {
+			foreach ( $data['@graph'] as $item ) {
+				if ( ! is_array( $item ) ) {
+					continue;
+				}
+				$found = self::find_jsonld_author( $item );
+				if ( null !== $found ) {
+					return $found;
+				}
+			}
+		}
+
+		// Direct author field on this object (Article, NewsArticle, etc.).
+		if ( isset( $data['author'] ) ) {
+			$a = $data['author'];
+			// Single author object: {"author": {"@type": "Person", ...}}
+			if ( is_array( $a ) && ! empty( $a['@type'] ) ) {
+				return $a;
+			}
+			// Array of author objects: {"author": [{"@type": "Person", ...}, ...]}
+			if ( is_array( $a ) && isset( $a[0] ) && is_array( $a[0] ) ) {
+				return $a[0];
+			}
+		}
+
+		// Recurse into nested typed entities (e.g. WebPage → mainEntity).
+		foreach ( $data as $key => $value ) {
+			if ( in_array( $key, [ '@graph', 'author' ], true ) ) {
+				continue; // Already handled above.
+			}
+			if ( is_array( $value ) && ! empty( $value['@type'] ) ) {
+				$found = self::find_jsonld_author( $value );
+				if ( null !== $found ) {
+					return $found;
+				}
+			}
+		}
+
+		return null;
 	}
 
 	/**
