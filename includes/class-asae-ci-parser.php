@@ -86,6 +86,12 @@ class ASAE_CI_Parser {
 		$featured_img   = self::extract_featured_image( $dom, $xpath, $url );
 		$content_node   = self::find_content_node( $dom, $xpath );
 
+		// Refine: if the selected node is a broad element (article/main/body),
+		// try to zoom in to the actual prose body sub-container.
+		if ( $content_node ) {
+			$content_node = self::refine_content_node( $content_node, $xpath );
+		}
+
 		// Build the body HTML string with embeds preserved and inline images resolved.
 		$content = '';
 		if ( $content_node ) {
@@ -896,6 +902,87 @@ class ASAE_CI_Parser {
 	}
 
 	/**
+	 * Attempts to zoom in from a broad semantic container (article / main / body)
+	 * to the specific sub-element that holds the article's prose body.
+	 *
+	 * Many WordPress themes wrap the full article — header, body, and author bio —
+	 * inside a single <article> element, using theme-specific class names for the
+	 * sub-sections. Rather than trying to enumerate every possible class name,
+	 * this method uses two strategies in order:
+	 *
+	 *  1. Known content class patterns — the same names already in find_content_node()
+	 *     plus a few additional WP-common patterns. Catches entry-content, post-body, etc.
+	 *
+	 *  2. Paragraph-count heuristic — finds the first descendant div or section
+	 *     that has ≥ 3 direct <p> children. Article header blocks (category label,
+	 *     h1, byline) have no direct <p> children; author bio blocks typically have
+	 *     1–2 direct <p> children; the prose body usually has 3+. This approach is
+	 *     class-name-agnostic and works with fully custom themes.
+	 *
+	 *  3. Relaxed paragraph heuristic — same as above but with ≥ 2 direct <p>
+	 *     children, used as a second-pass fallback for shorter articles.
+	 *
+	 * If none of the strategies find a narrower match, the original node is returned
+	 * unchanged — so this method is always safe to call.
+	 *
+	 * @param DOMNode  $node  The content node found by find_content_node().
+	 * @param DOMXPath $xpath XPath evaluator for the full page DOM.
+	 * @return DOMNode The same node or a more specific descendant.
+	 */
+	private static function refine_content_node( DOMNode $node, DOMXPath $xpath ): DOMNode {
+		// Only refine when we landed on a broad container; specific selections
+		// (e.g. itemprop="articleBody", entry-content) don't need refinement.
+		if ( ! in_array( strtolower( $node->nodeName ), [ 'article', 'main', 'body' ], true ) ) {
+			return $node;
+		}
+
+		// 1. Known content-body class patterns (relative to the broad container).
+		$sub_patterns = [
+			'.//*[contains(@class,"entry-content")]',
+			'.//*[contains(@class,"post-content")]',
+			'.//*[contains(@class,"article-content")]',
+			'.//*[contains(@class,"article-body")]',
+			'.//*[contains(@class,"post-body")]',
+			'.//*[contains(@class,"entry-body")]',
+			'.//*[contains(@class,"content-body")]',
+			'.//*[contains(@class,"single-content")]',
+			'.//*[contains(@class,"story-body")]',
+			'.//*[contains(@class,"rich-text")]',
+			'.//*[@itemprop="articleBody"]',
+		];
+
+		foreach ( $sub_patterns as $expr ) {
+			$found = $xpath->query( $expr, $node );
+			if ( $found && $found->length > 0 ) {
+				return $found->item( 0 );
+			}
+		}
+
+		// 2. Paragraph-count heuristic: first div/section with ≥ 3 direct <p> children.
+		//    The article prose body is the element most likely to satisfy this threshold;
+		//    header and bio blocks typically have 0–2 direct <p> children.
+		$prose = $xpath->query( './/div[count(p)>=3]|.//section[count(p)>=3]', $node );
+		if ( $prose && $prose->length > 0 ) {
+			$candidate = $prose->item( 0 );
+			// Sanity: must contain a meaningful amount of text.
+			if ( strlen( $candidate->textContent ) > 200 ) {
+				return $candidate;
+			}
+		}
+
+		// 3. Relaxed threshold (≥ 2 direct <p> children) for shorter articles.
+		$prose2 = $xpath->query( './/div[count(p)>=2]|.//section[count(p)>=2]', $node );
+		if ( $prose2 && $prose2->length > 0 ) {
+			$candidate = $prose2->item( 0 );
+			if ( strlen( $candidate->textContent ) > 200 ) {
+				return $candidate;
+			}
+		}
+
+		return $node;
+	}
+
+	/**
 	 * Serialises a content DOMNode back to an HTML string.
 	 *
 	 * - Embeds (<iframe>, <video>, <embed>, <object>) are preserved verbatim.
@@ -949,10 +1036,12 @@ class ASAE_CI_Parser {
 			// inside the article body are preserved. The global site header is
 			// already outside the content node and never imported.
 			'//div[@id="asae-ci-wrap"]/header',
-			// Strip the article's own title, which is a direct child of the
-			// content wrapper. Post title is stored separately in WP, so the
-			// in-body h1 is always redundant.
-			'//div[@id="asae-ci-wrap"]/h1',
+			// Strip every h1 inside the content body. The article title is
+			// stored separately as the WP post_title field, so any h1 in the
+			// body is always redundant. This applies regardless of nesting depth
+			// (some themes wrap the h1 inside a header div rather than placing
+			// it as a direct child of the article element).
+			'//h1',
 			'//footer',
 			'//aside',
 			'//form',
@@ -961,6 +1050,17 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"author-info")]',
 			'//*[contains(@class,"author-card")]',
 			'//*[contains(@class,"author-bio")]',
+			'//*[contains(@class,"author-box")]',
+			'//*[contains(@class,"post-author")]',
+			'//*[contains(@class,"entry-author")]',
+			'//*[contains(@class,"author-section")]',
+			'//*[contains(@class,"author-profile")]',
+			// Article-level header containers (category label + title + byline).
+			// Many WP themes group these into a header div; removing the container
+			// catches all three at once even when individual elements use custom classes.
+			'//*[contains(@class,"entry-header")]',
+			'//*[contains(@class,"post-header")]',
+			'//*[contains(@class,"article-header")]',
 			// Article-level metadata chrome (author/date byline, categories line).
 			// These appear as direct or shallow children of the content node on
 			// many WordPress themes and are redundant to the WP post meta fields.
@@ -968,6 +1068,10 @@ class ASAE_CI_Parser {
 			'//*[contains(@class,"post-meta")]',
 			'//*[contains(@class,"article-meta")]',
 			'//*[contains(@class,"byline")]',
+			// Inline category/tag label elements (often rendered as a styled link
+			// or badge above the article title).
+			'//*[contains(@class,"cat-links")]',
+			'//*[contains(@class,"entry-categories")]',
 			// <noscript> fallback blocks — always browser/JS chrome, never article content.
 			// This catches Disqus "Please enable JavaScript" notices and similar
 			// embedded service fallbacks that appear as siblings of their script tags.
