@@ -34,6 +34,9 @@ class ASAE_CI_Admin {
 	/** Nonce action string for AJAX calls. */
 	const AJAX_NONCE = 'asae_ci_ajax_nonce';
 
+	/** Nonce action string for the redirect JSON export. */
+	const EXPORT_NONCE = 'asae_ci_export_redirects';
+
 	// ── Initialisation ────────────────────────────────────────────────────────
 
 	/**
@@ -139,6 +142,13 @@ class ASAE_CI_Admin {
 			wp_die( esc_html__( 'You do not have permission to access this page.', 'asae-content-ingestor' ) );
 		}
 
+		// Handle JSON redirect export (streams a file download — no view needed).
+		if ( isset( $_GET['asae_ci_action'] ) && 'export_redirects' === $_GET['asae_ci_action'] ) {
+			check_admin_referer( self::EXPORT_NONCE );
+			self::handle_export_redirects();
+			exit;
+		}
+
 		$active_tab = sanitize_key( $_GET['tab'] ?? 'run' );
 		if ( ! in_array( $active_tab, [ 'run', 'reports' ], true ) ) {
 			$active_tab = 'run';
@@ -192,6 +202,7 @@ class ASAE_CI_Admin {
 		$batch_limit     = sanitize_text_field( $_POST['batch_limit']      ?? '50' );
 		$run_type        = sanitize_text_field( $_POST['run_type']          ?? 'dry' );
 		$additional_tags = sanitize_text_field( wp_unslash( $_POST['additional_tags'] ?? '' ) );
+		$source_type     = sanitize_text_field( $_POST['source_type'] ?? 'replace' );
 
 		if ( empty( $source_url ) ) {
 			wp_send_json_error( [ 'message' => __( 'An RSS feed URL is required.', 'asae-content-ingestor' ) ] );
@@ -207,6 +218,11 @@ class ASAE_CI_Admin {
 			$run_type = 'dry';
 		}
 
+		// Validate source_type value.
+		if ( ! in_array( $source_type, [ 'replace', 'mirror' ], true ) ) {
+			$source_type = 'replace';
+		}
+
 		$job_key = ASAE_CI_Scheduler::create_job( [
 			'source_url'      => $source_url,
 			'url_restriction' => $url_restriction ?: null,
@@ -214,6 +230,7 @@ class ASAE_CI_Admin {
 			'batch_limit'     => $batch_limit,
 			'run_type'        => $run_type,
 			'additional_tags' => $additional_tags,
+			'source_type'     => $source_type,
 		] );
 
 		if ( is_wp_error( $job_key ) ) {
@@ -442,6 +459,65 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'Permission denied.', 'asae-content-ingestor' ) ] );
 			wp_die();
 		}
+	}
+
+	/**
+	 * Streams a Redirection-plugin-compatible JSON file containing all
+	 * asaecenter.org source URLs stored in _asae_ci_source_url post meta.
+	 *
+	 * Each redirect maps the source path to the canonical WP post URL so that
+	 * the exported file can be imported into the Redirection plugin on the
+	 * asaecenter.org WP site without creating duplicates on the current site.
+	 *
+	 * @return void  (exits after streaming)
+	 */
+	private static function handle_export_redirects(): void {
+		global $wpdb;
+
+		// Fetch all posts that have a asaecenter.org source URL.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results(
+			"SELECT pm.post_id, pm.meta_value AS source_url
+			 FROM {$wpdb->postmeta} pm
+			 WHERE pm.meta_key = '_asae_ci_source_url'
+			   AND pm.meta_value LIKE '%asaecenter.org%'
+			   AND EXISTS (
+			       SELECT 1 FROM {$wpdb->posts} p
+			       WHERE p.ID = pm.post_id AND p.post_status IN ('publish','draft')
+			   )",
+			ARRAY_A
+		);
+		// phpcs:enable
+
+		$redirects = [];
+		foreach ( $rows as $row ) {
+			$parsed = wp_parse_url( $row['source_url'] );
+			$path   = $parsed['path'] ?? '';
+			if ( ! $path ) {
+				continue;
+			}
+			$target = get_permalink( (int) $row['post_id'] );
+			if ( ! $target ) {
+				continue;
+			}
+			$redirects[] = [
+				'url'         => $path,
+				'action_type' => 'url',
+				'action_code' => 301,
+				'action_data' => $target,
+				'regex'       => false,
+				'title'       => '',
+			];
+		}
+
+		$filename = 'asaecenter-redirects-' . gmdate( 'Ymd' ) . '.json';
+		header( 'Content-Type: application/json; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
+		header( 'Cache-Control: no-store, no-cache' );
+
+		// phpcs:disable WordPress.Security.EscapeOutput
+		echo wp_json_encode( [ 'redirects' => $redirects ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
+		// phpcs:enable
 	}
 
 	/**

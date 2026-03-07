@@ -41,6 +41,29 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 		</a>
 	</nav>
 
+	<?php
+	// Build the nonce-protected export URL.
+	$export_url = wp_nonce_url(
+		add_query_arg(
+			[ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'asae_ci_action' => 'export_redirects' ],
+			admin_url( 'tools.php' )
+		),
+		ASAE_CI_Admin::EXPORT_NONCE
+	);
+	?>
+	<div style="margin: .75rem 0 1rem;">
+		<a
+			href="<?php echo esc_url( $export_url ); ?>"
+			class="button"
+			aria-describedby="asae-ci-export-hint"
+		>
+			<?php esc_html_e( 'Export ASAEcenter.org Redirects (JSON)', 'asae-content-ingestor' ); ?>
+		</a>
+		<p id="asae-ci-export-hint" class="description" style="margin-top:.35rem;">
+			<?php esc_html_e( 'Downloads a Redirection-plugin-compatible JSON file of all ingested asaecenter.org URLs for import on the ASAE Center WP site.', 'asae-content-ingestor' ); ?>
+		</p>
+	</div>
+
 	<?php if ( empty( $reports ) ) : ?>
 		<div class="asae-ci-card">
 			<p><?php esc_html_e( 'No reports found. Run an Active Run to generate reports.', 'asae-content-ingestor' ); ?></p>

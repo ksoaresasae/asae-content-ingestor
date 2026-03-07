@@ -58,6 +58,8 @@ class ASAE_CI_Scheduler {
 		$initial_queue = ASAE_CI_Crawler::build_initial_queue( $source_url, 0, $url_restriction );
 
 		$additional_tags = sanitize_text_field( $args['additional_tags'] ?? '' );
+		$source_type     = in_array( $args['source_type'] ?? 'replace', [ 'replace', 'mirror' ], true )
+		                   ? $args['source_type'] : 'replace';
 
 		// Initial job queue_data blob.
 		$queue_data = [
@@ -70,6 +72,7 @@ class ASAE_CI_Scheduler {
 			'dry_results'     => [],    // Populated during Dry Run preview.
 			'additional_tags' => $additional_tags, // Batch-level tags applied to every item.
 			'pending_review'  => [],    // Items that need manual category assignment.
+			'source_type'     => $source_type,     // 'replace' or 'mirror'.
 		];
 
 		$now     = current_time( 'mysql' );
@@ -282,7 +285,8 @@ class ASAE_CI_Scheduler {
 		$limit_int      = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
 
 		// Parse batch-level extra tags from the stored comma-separated string.
-		$extra_tags = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
+		$extra_tags  = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
+		$source_type = $queue_data['source_type'] ?? 'replace';
 
 		$count = 0;
 
@@ -313,8 +317,8 @@ class ASAE_CI_Scheduler {
 			// Parse the article.
 			$parsed = ASAE_CI_Parser::parse( $url, $html );
 
-			// Ingest into WordPress (passing batch-level extra tags).
-			$post_id = ASAE_CI_Ingester::ingest( $parsed, $job['post_type'], $extra_tags );
+			// Ingest into WordPress (passing batch-level extra tags and source type).
+			$post_id = ASAE_CI_Ingester::ingest( $parsed, $job['post_type'], $extra_tags, $source_type );
 
 			if ( is_wp_error( $post_id ) ) {
 				if ( 'asae_ci_needs_category' === $post_id->get_error_code() ) {

@@ -199,6 +199,33 @@ if ( ! current_user_can( 'manage_options' ) ) {
 				</div>
 			</fieldset>
 
+			<!-- Source Type -->
+			<fieldset class="asae-ci-field" aria-describedby="asae-ci-source-type-hint">
+				<legend><?php esc_html_e( 'Source Type', 'asae-content-ingestor' ); ?></legend>
+				<p id="asae-ci-source-type-hint" class="description">
+					<?php esc_html_e( 'How should the original source content be treated after ingestion?', 'asae-content-ingestor' ); ?>
+				</p>
+				<div class="asae-ci-radio-group" role="group">
+
+					<label class="asae-ci-radio-label">
+						<input type="radio" name="source_type" value="replace" checked />
+						<?php esc_html_e( 'Replace', 'asae-content-ingestor' ); ?>
+					</label>
+					<p class="asae-ci-radio-desc">
+						<?php esc_html_e( 'This site replaces the source. A 301 redirect will be created for each ingested URL (associationsnow.com URLs are registered automatically; asaecenter.org URLs can be exported from the Reports tab for import on the ASAE Center WP site).', 'asae-content-ingestor' ); ?>
+					</p>
+
+					<label class="asae-ci-radio-label">
+						<input type="radio" name="source_type" value="mirror" />
+						<?php esc_html_e( 'Mirror', 'asae-content-ingestor' ); ?>
+					</label>
+					<p class="asae-ci-radio-desc">
+						<?php esc_html_e( 'The original content continues to live at the source (e.g. YouTube, podcast sites). No redirect will be created; the source URL will be stored as an attribution link in post meta.', 'asae-content-ingestor' ); ?>
+					</p>
+
+				</div>
+			</fieldset>
+
 			<!-- Submit -->
 			<div class="asae-ci-field asae-ci-submit-row">
 				<?php wp_nonce_field( ASAE_CI_Admin::NONCE_ACTION, '_wpnonce', true ); ?>

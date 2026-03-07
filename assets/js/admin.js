@@ -99,6 +99,7 @@
 				post_type       : $( '#asae-ci-post-type' ).val(),
 				batch_limit     : $( 'input[name="batch_limit"]:checked' ).val() || '50',
 				run_type        : $( 'input[name="run_type"]:checked' ).val()    || 'dry',
+				source_type     : $( 'input[name="source_type"]:checked' ).val() || 'replace',
 			},
 		} )
 		.done( function ( response ) {

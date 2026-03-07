@@ -42,7 +42,7 @@ class ASAE_CI_Ingester {
 	 *                       post was created as a draft awaiting manual category assignment,
 	 *                       or another WP_Error on failure.
 	 */
-	public static function ingest( array $parsed_data, string $post_type = 'post', array $extra_tags = [] ) {
+	public static function ingest( array $parsed_data, string $post_type = 'post', array $extra_tags = [], string $source_type = 'replace' ) {
 		$source_url = $parsed_data['source_url'] ?? '';
 
 		if ( empty( $source_url ) ) {
@@ -189,12 +189,17 @@ class ASAE_CI_Ingester {
 			// No category match – publish as draft and flag for admin review.
 			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'draft' ] );
 			update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
+			// Register redirect even for drafts: the post will be published before cutover.
+			self::maybe_register_redirect( $post_id, $source_url, $source_type );
 			return new WP_Error(
 				'asae_ci_needs_category',
 				'No matching category found; post saved as draft.',
 				[ 'post_id' => $post_id ]
 			);
 		}
+
+		// Register redirect (or store mirror attribution URL) for this ingested post.
+		self::maybe_register_redirect( $post_id, $source_url, $source_type );
 
 		return $post_id;
 	}
@@ -1121,6 +1126,148 @@ class ASAE_CI_Ingester {
 		// Simple Local Avatars integration (v2.x stores the attachment ID, not the URL).
 		// The plugin retrieves the URL dynamically via wp_get_attachment_image_src().
 		update_user_meta( $user_id, 'simple_local_avatar', [ 'full' => $attachment_id ] );
+	}
+
+	// ── Redirect Registration ─────────────────────────────────────────────────
+
+	/**
+	 * Handles redirect or attribution logic after a post is successfully ingested.
+	 *
+	 * 'replace' source type:
+	 *  - associationsnow.com URLs → 301 redirect written directly to the
+	 *    Redirection plugin's DB table (group: "Associations Now redirects").
+	 *  - asaecenter.org URLs → source URL already in _asae_ci_source_url;
+	 *    no redirect on this site (exported via the Reports page for import
+	 *    on the asaecenter WP site).
+	 *  - All other domains → no action (original is being retired but is not
+	 *    a domain managed by this WP install).
+	 *
+	 * 'mirror' source type:
+	 *  - Stores the original URL in '_asae_ci_mirror_url' post meta for
+	 *    attribution display; no redirect is created.
+	 *
+	 * @param int    $post_id     The newly created WP post ID.
+	 * @param string $source_url  The original article URL.
+	 * @param string $source_type 'replace' or 'mirror'.
+	 * @return void
+	 */
+	private static function maybe_register_redirect( int $post_id, string $source_url, string $source_type ): void {
+		if ( 'mirror' === $source_type ) {
+			update_post_meta( $post_id, '_asae_ci_mirror_url', esc_url_raw( $source_url ) );
+			return;
+		}
+
+		// 'replace': only auto-populate Redirection for associationsnow.com.
+		// asaecenter.org redirects are exported separately for the other WP site.
+		$host = strtolower( (string) parse_url( $source_url, PHP_URL_HOST ) );
+		$host = ltrim( $host, 'www.' );
+		if ( 'associationsnow.com' !== $host ) {
+			return;
+		}
+
+		global $wpdb;
+		$items_table  = $wpdb->prefix . 'redirection_items';
+		$groups_table = $wpdb->prefix . 'redirection_groups';
+
+		// Guard: verify the Redirection plugin tables exist before writing.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$table_exists = ( $wpdb->get_var( "SHOW TABLES LIKE '{$items_table}'" ) === $items_table );
+		// phpcs:enable
+		if ( ! $table_exists ) {
+			return; // Redirection plugin not installed – skip silently.
+		}
+
+		$source_path = (string) parse_url( $source_url, PHP_URL_PATH );
+		if ( empty( $source_path ) ) {
+			return;
+		}
+
+		// Dedup: skip if a redirect for this path already exists.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$existing = $wpdb->get_var(
+			$wpdb->prepare( "SELECT id FROM {$items_table} WHERE url = %s LIMIT 1", $source_path )
+		);
+		// phpcs:enable
+		if ( $existing ) {
+			return;
+		}
+
+		$group_id   = self::get_or_create_redirection_group( 'Associations Now redirects', $groups_table );
+		$target_url = get_permalink( $post_id );
+		if ( ! $target_url || ! $group_id ) {
+			return;
+		}
+
+		self::write_redirection_row( $source_path, $target_url, $group_id, $items_table );
+	}
+
+	/**
+	 * Finds or creates a redirect group in the Redirection plugin's groups table.
+	 *
+	 * @param string $group_name  Display name for the group.
+	 * @param string $groups_table Full table name including WP prefix.
+	 * @return int Group ID, or 0 on failure.
+	 */
+	private static function get_or_create_redirection_group( string $group_name, string $groups_table ): int {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$group_id = $wpdb->get_var(
+			$wpdb->prepare( "SELECT id FROM {$groups_table} WHERE name = %s LIMIT 1", $group_name )
+		);
+
+		if ( $group_id ) {
+			return (int) $group_id;
+		}
+
+		$wpdb->insert(
+			$groups_table,
+			[
+				'name'      => $group_name,
+				'status'    => 'enabled',
+				'module_id' => 1,   // 1 = WordPress module in Redirection plugin.
+				'position'  => 0,
+			],
+			[ '%s', '%s', '%d', '%d' ]
+		);
+		// phpcs:enable
+
+		return (int) $wpdb->insert_id;
+	}
+
+	/**
+	 * Inserts a single 301 redirect row into the Redirection plugin's items table.
+	 *
+	 * @param string $source_path  URL path being redirected (no host).
+	 * @param string $target_url   Full destination URL.
+	 * @param int    $group_id     Redirection group ID.
+	 * @param string $items_table  Full table name including WP prefix.
+	 * @return void
+	 */
+	private static function write_redirection_row( string $source_path, string $target_url, int $group_id, string $items_table ): void {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$wpdb->insert(
+			$items_table,
+			[
+				'url'         => $source_path,
+				'title'       => '',
+				'action_type' => 'url',
+				'action_code' => 301,
+				'action_data' => esc_url_raw( $target_url ),
+				'match_type'  => 'url',
+				'regex'       => 0,
+				'group_id'    => $group_id,
+				'status'      => 'enabled',
+				'last_count'  => 0,
+				'last_access' => '2000-01-01 00:00:00',
+				'position'    => 0,
+				'hits'        => 0,
+			],
+			[ '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%d', '%s', '%d', '%s', '%d', '%d' ]
+		);
+		// phpcs:enable
 	}
 
 	/**
