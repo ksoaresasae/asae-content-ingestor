@@ -3,7 +3,7 @@
  * ASAE Content Ingestor – Admin UI Controller
  *
  * Registers all WordPress admin-side features for this plugin:
- *  - A top-level "ASAE" menu with a "Content Ingestor" submenu page (accessible only to admins).
+ *  - A "Content Ingestor" submenu page under the top-level "ASAE" menu (accessible only to admins).
  *  - An Ingestion Reports sub-page.
  *  - Enqueuing of admin CSS and JS assets.
  *  - AJAX handlers for starting jobs, polling progress, and processing batches.
@@ -64,64 +64,22 @@ class ASAE_CI_Admin {
 	// ── Menu Registration ─────────────────────────────────────────────────────
 
 	/**
-	 * Registers a top-level "ASAE" menu (if it doesn't already exist) and adds
-	 * the "Content Ingestor" submenu page beneath it.
+	 * Adds a "Content Ingestor" submenu page under the top-level "ASAE" menu.
+	 *
+	 * The "ASAE" parent menu is created by the asae-explore plugin, which is
+	 * always active. This plugin only registers its own submenu entry.
 	 *
 	 * @return void
 	 */
 	public static function register_menus(): void {
-		// Create the top-level "ASAE" menu only if another ASAE plugin hasn't
-		// already registered it. The first submenu page duplicates the parent
-		// entry — we use a blank title so WP auto-hides that duplicate.
-		global $menu;
-		$parent_exists = false;
-		if ( is_array( $menu ) ) {
-			foreach ( $menu as $entry ) {
-				if ( isset( $entry[2] ) && 'asae' === $entry[2] ) {
-					$parent_exists = true;
-					break;
-				}
-			}
-		}
-
-		if ( ! $parent_exists ) {
-			// Use the Content Ingestor slug as the parent menu slug so that
-			// clicking "ASAE" in the sidebar goes directly to this plugin's
-			// page, and no empty duplicate submenu item is created.
-			add_menu_page(
-				__( 'ASAE', 'asae-content-ingestor' ),
-				__( 'ASAE', 'asae-content-ingestor' ),
-				'manage_options',
-				'asae-content-ingestor',
-				[ __CLASS__, 'render_main_page' ],
-				'dashicons-building',
-				30
-			);
-
-			// Re-label the auto-generated first submenu entry from "ASAE" to
-			// "Content Ingestor" so the sidebar reads:
-			//   ASAE
-			//     Content Ingestor
-			add_submenu_page(
-				'asae-content-ingestor',
-				__( 'Content Ingestor', 'asae-content-ingestor' ),
-				__( 'Content Ingestor', 'asae-content-ingestor' ),
-				'manage_options',
-				'asae-content-ingestor',
-				[ __CLASS__, 'render_main_page' ]
-			);
-		} else {
-			// Another ASAE plugin already owns the top-level menu; just add
-			// our submenu page beneath it.
-			add_submenu_page(
-				'asae',
-				__( 'Content Ingestor', 'asae-content-ingestor' ),
-				__( 'Content Ingestor', 'asae-content-ingestor' ),
-				'manage_options',
-				'asae-content-ingestor',
-				[ __CLASS__, 'render_main_page' ]
-			);
-		}
+		add_submenu_page(
+			'asae',
+			__( 'Content Ingestor', 'asae-content-ingestor' ),
+			__( 'Content Ingestor', 'asae-content-ingestor' ),
+			'manage_options',
+			'asae-content-ingestor',
+			[ __CLASS__, 'render_main_page' ]
+		);
 	}
 
 	// ── Asset Enqueuing ───────────────────────────────────────────────────────
@@ -134,8 +92,7 @@ class ASAE_CI_Admin {
 	 */
 	public static function enqueue_assets( string $hook_suffix ): void {
 		$plugin_pages = [
-			'toplevel_page_asae-content-ingestor', // When this plugin owns the ASAE parent menu.
-			'asae_page_asae-content-ingestor',      // When another ASAE plugin owns the parent.
+			'asae_page_asae-content-ingestor',
 		];
 
 		if ( ! in_array( $hook_suffix, $plugin_pages, true ) ) {
