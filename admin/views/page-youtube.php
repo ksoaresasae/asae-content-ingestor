@@ -37,15 +37,15 @@ if ( ! current_user_can( 'manage_options' ) ) {
 	</h1>
 
 	<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Content Ingestor navigation', 'asae-content-ingestor' ); ?>">
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor' ) ); ?>"
 		   class="nav-tab">
 			<?php esc_html_e( 'Run', 'asae-content-ingestor' ); ?>
 		</a>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
 		   class="nav-tab">
 			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
 		</a>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
 		   class="nav-tab nav-tab-active"
 		   aria-current="page">
 			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
@@ -186,7 +186,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 
 		<div class="asae-ci-yt-actions" style="margin-top: .75rem;">
 			<a
-				href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&prefill_feed=' . rawurlencode( $yt_feed_status['url'] ) ) ); ?>"
+				href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&prefill_feed=' . rawurlencode( $yt_feed_status['url'] ) ) ); ?>"
 				class="button button-primary"
 			>
 				<?php esc_html_e( 'Use in Run Tab', 'asae-content-ingestor' ); ?> &rarr;

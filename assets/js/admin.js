@@ -716,7 +716,7 @@
 	 * @returns {string}
 	 */
 	function ajaxReportUrl( reportId ) {
-		return 'tools.php?page=asae-content-ingestor&tab=reports&report_id=' + encodeURIComponent( reportId );
+		return 'admin.php?page=asae-content-ingestor&tab=reports&report_id=' + encodeURIComponent( reportId );
 	}
 
 	/**
@@ -866,7 +866,7 @@
 
 				// Set action button URLs.
 				var feedUrl = data.feed_url;
-				$ytUseFeedBtn.attr( 'href', 'tools.php?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( feedUrl ) );
+				$ytUseFeedBtn.attr( 'href', 'admin.php?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( feedUrl ) );
 				$ytDownloadBtn.attr( 'href', feedUrl );
 
 				$ytResults.removeClass( 'asae-ci-hidden' );

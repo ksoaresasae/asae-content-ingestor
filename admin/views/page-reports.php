@@ -30,16 +30,16 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 	</h1>
 
 	<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Content Ingestor navigation', 'asae-content-ingestor' ); ?>">
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor' ) ); ?>"
 		   class="nav-tab">
 			<?php esc_html_e( 'Run', 'asae-content-ingestor' ); ?>
 		</a>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
 		   class="nav-tab nav-tab-active"
 		   aria-current="page">
 			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
 		</a>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
 		   class="nav-tab">
 			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
 		</a>
@@ -50,7 +50,7 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 	$export_url = wp_nonce_url(
 		add_query_arg(
 			[ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'asae_ci_action' => 'export_redirects' ],
-			admin_url( 'tools.php' )
+			admin_url( 'admin.php' )
 		),
 		ASAE_CI_Admin::EXPORT_NONCE
 	);
@@ -99,7 +99,7 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 					<?php foreach ( $reports as $report ) :
 						$report_url = add_query_arg(
 							[ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'report_id' => (int) $report['id'] ],
-							admin_url( 'tools.php' )
+							admin_url( 'admin.php' )
 						);
 						$status_class = match ( $report['status'] ) {
 							'completed' => 'asae-ci-status-ok',
@@ -161,7 +161,7 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 			<?php if ( $pages > 1 ) : ?>
 			<div class="asae-ci-pagination" role="navigation" aria-label="<?php esc_attr_e( 'Reports pagination', 'asae-content-ingestor' ); ?>">
 				<?php for ( $p = 1; $p <= $pages; $p++ ) :
-					$page_url = add_query_arg( [ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'paged' => $p ], admin_url( 'tools.php' ) );
+					$page_url = add_query_arg( [ 'page' => 'asae-content-ingestor', 'tab' => 'reports', 'paged' => $p ], admin_url( 'admin.php' ) );
 					$is_current = ( $p === (int) $page );
 				?>
 				<a

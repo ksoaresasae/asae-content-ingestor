@@ -1,6 +1,6 @@
 <?php
 /**
- * Admin view – Main Tools > Content Ingestor page.
+ * Admin view – Main ASAE > Content Ingestor page.
  *
  * Variables available from ASAE_CI_Admin::render_main_page():
  *  $post_types – array of WP_Post_Type objects.
@@ -25,16 +25,16 @@ if ( ! current_user_can( 'manage_options' ) ) {
 	</h1>
 
 	<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Content Ingestor navigation', 'asae-content-ingestor' ); ?>">
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor' ) ); ?>"
 		   class="nav-tab nav-tab-active"
 		   aria-current="page">
 			<?php esc_html_e( 'Run', 'asae-content-ingestor' ); ?>
 		</a>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
 		   class="nav-tab">
 			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
 		</a>
-		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
 		   class="nav-tab">
 			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
 		</a>

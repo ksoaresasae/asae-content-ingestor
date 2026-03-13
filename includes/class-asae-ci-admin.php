@@ -3,7 +3,7 @@
  * ASAE Content Ingestor – Admin UI Controller
  *
  * Registers all WordPress admin-side features for this plugin:
- *  - A submenu page under Tools (accessible only to admins).
+ *  - A top-level "ASAE" menu with a "Content Ingestor" submenu page (accessible only to admins).
  *  - An Ingestion Reports sub-page.
  *  - Enqueuing of admin CSS and JS assets.
  *  - AJAX handlers for starting jobs, polling progress, and processing batches.
@@ -64,15 +64,42 @@ class ASAE_CI_Admin {
 	// ── Menu Registration ─────────────────────────────────────────────────────
 
 	/**
-	 * Adds the plugin's page under the WP Tools menu.
-	 * Reports are rendered as a tab within this single page – no separate menu entry.
+	 * Registers a top-level "ASAE" menu (if it doesn't already exist) and adds
+	 * the "Content Ingestor" submenu page beneath it.
 	 *
 	 * @return void
 	 */
 	public static function register_menus(): void {
-		add_management_page(
-			__( 'ASAE Content Ingestor', 'asae-content-ingestor' ),
-			__( 'ASAE Content Ingestor', 'asae-content-ingestor' ),
+		// Create the top-level "ASAE" menu only if another ASAE plugin hasn't
+		// already registered it. The first submenu page duplicates the parent
+		// entry — we use a blank title so WP auto-hides that duplicate.
+		global $menu;
+		$parent_exists = false;
+		if ( is_array( $menu ) ) {
+			foreach ( $menu as $entry ) {
+				if ( isset( $entry[2] ) && 'asae' === $entry[2] ) {
+					$parent_exists = true;
+					break;
+				}
+			}
+		}
+
+		if ( ! $parent_exists ) {
+			add_menu_page(
+				__( 'ASAE', 'asae-content-ingestor' ),
+				__( 'ASAE', 'asae-content-ingestor' ),
+				'manage_options',
+				'asae',
+				'__return_null', // Rendered by the first submenu page.
+				'dashicons-building',
+				30
+			);
+		}
+
+		add_submenu_page(
+			'asae',
+			__( 'Content Ingestor', 'asae-content-ingestor' ),
+			__( 'Content Ingestor', 'asae-content-ingestor' ),
 			'manage_options',
 			'asae-content-ingestor',
 			[ __CLASS__, 'render_main_page' ]
@@ -89,7 +116,7 @@ class ASAE_CI_Admin {
 	 */
 	public static function enqueue_assets( string $hook_suffix ): void {
 		$plugin_pages = [
-			'tools_page_asae-content-ingestor',
+			'asae_page_asae-content-ingestor',
 		];
 
 		if ( ! in_array( $hook_suffix, $plugin_pages, true ) ) {
@@ -137,7 +164,7 @@ class ASAE_CI_Admin {
 	// ── Page Renderers ────────────────────────────────────────────────────────
 
 	/**
-	 * Renders the Tools > Content Ingestor page, with tab routing.
+	 * Renders the ASAE > Content Ingestor page, with tab routing.
 	 *
 	 * Tab 'run'     (default) – run configuration form and progress panels.
 	 * Tab 'reports'           – ingestion reports listing or report detail.
