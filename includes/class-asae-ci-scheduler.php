@@ -328,6 +328,9 @@ class ASAE_CI_Scheduler {
 			// couldn't extract author, date, or tags (e.g. YouTube pages).
 			$parsed = self::merge_feed_metadata( $parsed, $url, $feed_metadata );
 
+			// For YouTube URLs, replace scraped HTML with a proper embed block.
+			$parsed = self::maybe_apply_youtube_embed( $parsed, $url );
+
 			// Ingest into WordPress (passing batch-level extra tags and source type).
 			$post_id = ASAE_CI_Ingester::ingest( $parsed, $job['post_type'], $extra_tags, $source_type );
 
@@ -436,6 +439,9 @@ class ASAE_CI_Scheduler {
 			// Merge feed-level metadata as fallback when the HTML parser
 			// couldn't extract author, date, or tags (e.g. YouTube pages).
 			$parsed = self::merge_feed_metadata( $parsed, $url, $feed_metadata );
+
+			// For YouTube URLs, replace scraped HTML with a proper embed block.
+			$parsed = self::maybe_apply_youtube_embed( $parsed, $url );
 
 			$preview = ASAE_CI_Ingester::dry_run_preview( $parsed, $job['post_type'], $extra_tags );
 
@@ -699,6 +705,42 @@ class ASAE_CI_Scheduler {
 			}
 			$parsed['tags'] = $existing;
 		}
+
+		return $parsed;
+	}
+
+	// ── YouTube Embed Override ───────────────────────────────────────────────
+
+	/**
+	 * Detects YouTube video URLs and replaces the parsed content with a
+	 * WordPress embed block so the ingested post shows the video player
+	 * instead of scraped YouTube page HTML.
+	 *
+	 * Also uses the video description from the feed as the excerpt when
+	 * the HTML parser didn't find a usable excerpt.
+	 *
+	 * @param array  $parsed Parsed article data.
+	 * @param string $url    The source URL being processed.
+	 * @return array Updated parsed data.
+	 */
+	private static function maybe_apply_youtube_embed( array $parsed, string $url ): array {
+		// Match youtube.com/watch?v=... and youtu.be/... URLs.
+		if ( ! preg_match( '#^https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([A-Za-z0-9_-]+)#', $url, $m ) ) {
+			return $parsed;
+		}
+
+		$video_url = 'https://www.youtube.com/watch?v=' . $m[1];
+
+		// Replace the content with a WordPress YouTube embed block.
+		$parsed['content'] = '<!-- wp:embed {"url":"' . esc_url( $video_url ) . '","type":"video","providerNameSlug":"youtube","responsive":true,"className":"wp-embed-aspect-16-9 wp-has-aspect-ratio"} -->'
+			. "\n" . '<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio">'
+			. '<div class="wp-block-embed__wrapper">' . "\n"
+			. esc_url( $video_url ) . "\n"
+			. '</div></figure>' . "\n"
+			. '<!-- /wp:embed -->';
+
+		// Clear inline images — the YouTube page scrape produces irrelevant images.
+		$parsed['inline_images'] = [];
 
 		return $parsed;
 	}
