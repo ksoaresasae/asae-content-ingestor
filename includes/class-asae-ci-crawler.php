@@ -94,7 +94,7 @@ class ASAE_CI_Crawler {
 	 *
 	 * @param string $feed_url        The URL of the RSS or Atom feed.
 	 * @param string $url_restriction Optional URL prefix filter.
-	 * @return array<string, array{author: string, date: string, tags: string[]}> URL → metadata map.
+	 * @return array<string, array{author: string, date: string, tags: string[], description: string}> URL → metadata map.
 	 */
 	public static function fetch_feed_metadata( string $feed_url, string $url_restriction = '' ): array {
 		// ── Strategy 1: SimplePie ─────────────────────────────────────────────
@@ -364,7 +364,7 @@ class ASAE_CI_Crawler {
 	 *
 	 * @param SimplePie $feed            Parsed SimplePie feed.
 	 * @param string    $url_restriction Optional URL prefix filter.
-	 * @return array<string, array{author: string, date: string, tags: string[]}>
+	 * @return array<string, array{author: string, date: string, tags: string[], description: string}>
 	 */
 	private static function metadata_from_simplepie( $feed, string $url_restriction ): array {
 		$items = $feed->get_items( 0, $feed->get_item_quantity() );
@@ -413,10 +413,14 @@ class ASAE_CI_Crawler {
 				}
 			}
 
+			// Description: SimplePie get_description().
+			$description = trim( $item->get_description() ?: '' );
+
 			$meta[ $permalink ] = [
-				'author' => $author_name,
-				'date'   => $date,
-				'tags'   => array_unique( array_filter( $tags_arr ) ),
+				'author'      => $author_name,
+				'date'        => $date,
+				'tags'        => array_unique( array_filter( $tags_arr ) ),
+				'description' => $description,
 			];
 		}
 
@@ -428,7 +432,7 @@ class ASAE_CI_Crawler {
 	 *
 	 * @param string $feed_url        The feed URL.
 	 * @param string $url_restriction Optional URL prefix filter.
-	 * @return array<string, array{author: string, date: string, tags: string[]}>
+	 * @return array<string, array{author: string, date: string, tags: string[], description: string}>
 	 */
 	private static function metadata_from_xml( string $feed_url, string $url_restriction ): array {
 		$response = wp_remote_get( $feed_url, [
@@ -491,10 +495,13 @@ class ASAE_CI_Crawler {
 					}
 				}
 
+				$description = trim( (string) ( $item->description ?? '' ) );
+
 				$meta[ $link ] = [
-					'author' => $author,
-					'date'   => $date,
-					'tags'   => array_unique( array_filter( $tags_arr ) ),
+					'author'      => $author,
+					'date'        => $date,
+					'tags'        => array_unique( array_filter( $tags_arr ) ),
+					'description' => $description,
 				];
 			}
 		} elseif ( 'feed' === $root ) {
@@ -532,10 +539,13 @@ class ASAE_CI_Crawler {
 					}
 				}
 
+				$description = trim( (string) ( $entry->summary ?? '' ) );
+
 				$meta[ $link ] = [
-					'author' => $author,
-					'date'   => $date,
-					'tags'   => array_unique( array_filter( $tags_arr ) ),
+					'author'      => $author,
+					'date'        => $date,
+					'tags'        => array_unique( array_filter( $tags_arr ) ),
+					'description' => $description,
 				];
 			}
 		}

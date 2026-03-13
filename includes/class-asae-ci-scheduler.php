@@ -693,6 +693,11 @@ class ASAE_CI_Scheduler {
 			$parsed['date'] = $fm['date'];
 		}
 
+		// Description: carry feed description through for YouTube embed enrichment.
+		if ( ! empty( $fm['description'] ) ) {
+			$parsed['feed_description'] = $fm['description'];
+		}
+
 		// Tags: merge feed tags with any HTML-extracted tags (no duplicates).
 		if ( ! empty( $fm['tags'] ) ) {
 			$existing     = $parsed['tags'] ?? [];
@@ -732,12 +737,31 @@ class ASAE_CI_Scheduler {
 		$video_url = 'https://www.youtube.com/watch?v=' . $m[1];
 
 		// Replace the content with a WordPress YouTube embed block.
-		$parsed['content'] = '<!-- wp:embed {"url":"' . esc_url( $video_url ) . '","type":"video","providerNameSlug":"youtube","responsive":true,"className":"wp-embed-aspect-16-9 wp-has-aspect-ratio"} -->'
+		$embed = '<!-- wp:embed {"url":"' . esc_url( $video_url ) . '","type":"video","providerNameSlug":"youtube","responsive":true,"className":"wp-embed-aspect-16-9 wp-has-aspect-ratio"} -->'
 			. "\n" . '<figure class="wp-block-embed is-type-video is-provider-youtube wp-block-embed-youtube wp-embed-aspect-16-9 wp-has-aspect-ratio">'
 			. '<div class="wp-block-embed__wrapper">' . "\n"
 			. esc_url( $video_url ) . "\n"
 			. '</div></figure>' . "\n"
 			. '<!-- /wp:embed -->';
+
+		// Append the video description from the feed below the embed block.
+		$description = trim( $parsed['feed_description'] ?? '' );
+		if ( $description ) {
+			$paragraphs = preg_split( '/\n{2,}/', $description );
+			foreach ( $paragraphs as $para ) {
+				$para = trim( $para );
+				if ( '' === $para ) {
+					continue;
+				}
+				// Convert single newlines to <br> within a paragraph.
+				$para   = nl2br( esc_html( $para ), false );
+				$embed .= "\n\n" . '<!-- wp:paragraph -->' . "\n"
+					. '<p>' . $para . '</p>' . "\n"
+					. '<!-- /wp:paragraph -->';
+			}
+		}
+
+		$parsed['content'] = $embed;
 
 		// Clear inline images — the YouTube page scrape produces irrelevant images.
 		$parsed['inline_images'] = [];
