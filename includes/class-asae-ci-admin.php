@@ -85,25 +85,43 @@ class ASAE_CI_Admin {
 		}
 
 		if ( ! $parent_exists ) {
+			// Use the Content Ingestor slug as the parent menu slug so that
+			// clicking "ASAE" in the sidebar goes directly to this plugin's
+			// page, and no empty duplicate submenu item is created.
 			add_menu_page(
 				__( 'ASAE', 'asae-content-ingestor' ),
 				__( 'ASAE', 'asae-content-ingestor' ),
 				'manage_options',
-				'asae',
-				'__return_null', // Rendered by the first submenu page.
+				'asae-content-ingestor',
+				[ __CLASS__, 'render_main_page' ],
 				'dashicons-building',
 				30
 			);
-		}
 
-		add_submenu_page(
-			'asae',
-			__( 'Content Ingestor', 'asae-content-ingestor' ),
-			__( 'Content Ingestor', 'asae-content-ingestor' ),
-			'manage_options',
-			'asae-content-ingestor',
-			[ __CLASS__, 'render_main_page' ]
-		);
+			// Re-label the auto-generated first submenu entry from "ASAE" to
+			// "Content Ingestor" so the sidebar reads:
+			//   ASAE
+			//     Content Ingestor
+			add_submenu_page(
+				'asae-content-ingestor',
+				__( 'Content Ingestor', 'asae-content-ingestor' ),
+				__( 'Content Ingestor', 'asae-content-ingestor' ),
+				'manage_options',
+				'asae-content-ingestor',
+				[ __CLASS__, 'render_main_page' ]
+			);
+		} else {
+			// Another ASAE plugin already owns the top-level menu; just add
+			// our submenu page beneath it.
+			add_submenu_page(
+				'asae',
+				__( 'Content Ingestor', 'asae-content-ingestor' ),
+				__( 'Content Ingestor', 'asae-content-ingestor' ),
+				'manage_options',
+				'asae-content-ingestor',
+				[ __CLASS__, 'render_main_page' ]
+			);
+		}
 	}
 
 	// ── Asset Enqueuing ───────────────────────────────────────────────────────
@@ -116,7 +134,8 @@ class ASAE_CI_Admin {
 	 */
 	public static function enqueue_assets( string $hook_suffix ): void {
 		$plugin_pages = [
-			'asae_page_asae-content-ingestor',
+			'toplevel_page_asae-content-ingestor', // When this plugin owns the ASAE parent menu.
+			'asae_page_asae-content-ingestor',      // When another ASAE plugin owns the parent.
 		];
 
 		if ( ! in_array( $hook_suffix, $plugin_pages, true ) ) {
