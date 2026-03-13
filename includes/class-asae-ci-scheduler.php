@@ -233,6 +233,12 @@ class ASAE_CI_Scheduler {
 			return $queue_data;
 		}
 
+		// Extract per-item metadata (author, date, tags) from the feed entries.
+		// This is used as fallback when the HTML parser cannot find metadata
+		// on the target page (e.g. YouTube video watch pages).
+		$feed_metadata = ASAE_CI_Crawler::fetch_feed_metadata( $feed_url, $url_restriction );
+		$queue_data['feed_metadata'] = $feed_metadata;
+
 		// Mark the feed as fetched and store the discovered URLs.
 		$disc['feed_fetched'] = true;
 		$disc['content_urls'] = $urls;
@@ -282,6 +288,7 @@ class ASAE_CI_Scheduler {
 		$done           = (int) ( $ingest['processed'] ?? 0 );
 		$failed         = (int) ( $ingest['failed']    ?? 0 );
 		$pending_review = $queue_data['pending_review'] ?? [];
+		$feed_metadata  = $queue_data['feed_metadata']  ?? [];
 		$limit_int      = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
 
 		// Parse batch-level extra tags from the stored comma-separated string.
@@ -316,6 +323,10 @@ class ASAE_CI_Scheduler {
 
 			// Parse the article.
 			$parsed = ASAE_CI_Parser::parse( $url, $html );
+
+			// Merge feed-level metadata as fallback when the HTML parser
+			// couldn't extract author, date, or tags (e.g. YouTube pages).
+			$parsed = self::merge_feed_metadata( $parsed, $url, $feed_metadata );
 
 			// Ingest into WordPress (passing batch-level extra tags and source type).
 			$post_id = ASAE_CI_Ingester::ingest( $parsed, $job['post_type'], $extra_tags, $source_type );
@@ -387,11 +398,12 @@ class ASAE_CI_Scheduler {
 	 * @return array Updated queue_data.
 	 */
 	private static function run_dry_batch( array $queue_data, array $job ): array {
-		$ingest      = $queue_data['ingestion']   ?? [];
-		$queue       = $ingest['queue']            ?? [];
-		$done        = (int) ( $ingest['processed'] ?? 0 );
-		$new_count   = (int) ( $ingest['new_count']   ?? 0 ); // Non-duplicate items so far.
-		$dry_results = $queue_data['dry_results']  ?? [];
+		$ingest        = $queue_data['ingestion']     ?? [];
+		$queue         = $ingest['queue']              ?? [];
+		$done          = (int) ( $ingest['processed']  ?? 0 );
+		$new_count     = (int) ( $ingest['new_count']  ?? 0 ); // Non-duplicate items so far.
+		$dry_results   = $queue_data['dry_results']    ?? [];
+		$feed_metadata = $queue_data['feed_metadata']  ?? [];
 
 		// Parse batch-level extra tags.
 		$extra_tags = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
@@ -418,8 +430,13 @@ class ASAE_CI_Scheduler {
 				continue;
 			}
 
-			$html    = wp_remote_retrieve_body( $response );
-			$parsed  = ASAE_CI_Parser::parse( $url, $html );
+			$html   = wp_remote_retrieve_body( $response );
+			$parsed = ASAE_CI_Parser::parse( $url, $html );
+
+			// Merge feed-level metadata as fallback when the HTML parser
+			// couldn't extract author, date, or tags (e.g. YouTube pages).
+			$parsed = self::merge_feed_metadata( $parsed, $url, $feed_metadata );
+
 			$preview = ASAE_CI_Ingester::dry_run_preview( $parsed, $job['post_type'], $extra_tags );
 
 			$dry_results[] = $preview;
@@ -636,6 +653,54 @@ class ASAE_CI_Scheduler {
 			'is_needs_review'   => 'needs_review' === $job['status'],
 			'is_complete'       => 'completed' === $job['status'] || 'failed' === $job['status'],
 		];
+	}
+
+	// ── Feed Metadata Merge ──────────────────────────────────────────────────
+
+	/**
+	 * Merges feed-level metadata into parsed article data as fallback values.
+	 *
+	 * When the HTML parser returns empty author, date, or tags, this method
+	 * fills in those fields from the feed entry metadata (if available).
+	 * This ensures YouTube and other non-article pages still carry the
+	 * metadata that was present in the original feed.
+	 *
+	 * @param array  $parsed        Parsed article data from ASAE_CI_Parser::parse().
+	 * @param string $url           The article URL (used as key into the metadata map).
+	 * @param array  $feed_metadata URL → metadata map from the crawler.
+	 * @return array Updated parsed data with feed metadata merged in.
+	 */
+	private static function merge_feed_metadata( array $parsed, string $url, array $feed_metadata ): array {
+		if ( empty( $feed_metadata ) || ! isset( $feed_metadata[ $url ] ) ) {
+			return $parsed;
+		}
+
+		$fm = $feed_metadata[ $url ];
+
+		// Author: use feed value as fallback.
+		if ( empty( $parsed['author'] ) && ! empty( $fm['author'] ) ) {
+			$parsed['author'] = $fm['author'];
+		}
+
+		// Date: use feed value as fallback.
+		if ( empty( $parsed['date'] ) && ! empty( $fm['date'] ) ) {
+			$parsed['date'] = $fm['date'];
+		}
+
+		// Tags: merge feed tags with any HTML-extracted tags (no duplicates).
+		if ( ! empty( $fm['tags'] ) ) {
+			$existing     = $parsed['tags'] ?? [];
+			$existing_lc  = array_map( 'strtolower', $existing );
+			foreach ( $fm['tags'] as $tag ) {
+				if ( ! in_array( strtolower( $tag ), $existing_lc, true ) ) {
+					$existing[]    = $tag;
+					$existing_lc[] = strtolower( $tag );
+				}
+			}
+			$parsed['tags'] = $existing;
+		}
+
+		return $parsed;
 	}
 
 	// ── Utility ───────────────────────────────────────────────────────────────

@@ -94,9 +94,9 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		</div>
 	</section>
 
-	<!-- ── Feed Generator Section ────────────────────────────────────────── -->
-	<section class="asae-ci-card" aria-labelledby="asae-ci-yt-gen-heading">
-		<h2 id="asae-ci-yt-gen-heading"><?php esc_html_e( 'Generate Feed', 'asae-content-ingestor' ); ?></h2>
+	<!-- ── Channel / Playlist ID Section ────────────────────────────────── -->
+	<section class="asae-ci-card" aria-labelledby="asae-ci-yt-channel-heading">
+		<h2 id="asae-ci-yt-channel-heading"><?php esc_html_e( 'Channel / Playlist ID', 'asae-content-ingestor' ); ?></h2>
 
 		<?php if ( $yt_channel_id_saved ) : ?>
 		<p class="asae-ci-yt-key-status" id="asae-ci-yt-channel-status">
@@ -107,20 +107,37 @@ if ( ! current_user_can( 'manage_options' ) ) {
 
 		<div class="asae-ci-field">
 			<label for="asae-ci-yt-channel-id">
-				<?php esc_html_e( 'Channel ID or Uploads Playlist ID', 'asae-content-ingestor' ); ?>
+				<?php echo $yt_channel_id_saved
+					? esc_html__( 'Update Channel / Playlist ID', 'asae-content-ingestor' )
+					: esc_html__( 'Channel ID or Uploads Playlist ID', 'asae-content-ingestor' ); ?>
 			</label>
 			<input
 				type="text"
 				id="asae-ci-yt-channel-id"
 				class="regular-text"
 				placeholder="UCxxxxxxxxxxxxxxxxxxxxxxxx"
-				<?php if ( $yt_channel_id_saved ) : ?>value="<?php echo esc_attr( $yt_channel_id ); ?>"<?php endif; ?>
 				aria-describedby="asae-ci-yt-channel-hint"
 			/>
 			<p id="asae-ci-yt-channel-hint" class="description">
 				<?php esc_html_e( 'Enter a YouTube channel ID (UCxxx) or uploads playlist ID (UUxxx). Channel IDs are automatically converted to the uploads playlist.', 'asae-content-ingestor' ); ?>
 			</p>
 		</div>
+
+		<div class="asae-ci-submit-row">
+			<button type="button" id="asae-ci-yt-save-channel-btn" class="button">
+				<?php esc_html_e( 'Save Channel ID', 'asae-content-ingestor' ); ?>
+			</button>
+			<span id="asae-ci-yt-channel-msg" class="asae-ci-yt-inline-msg" role="status" aria-live="polite"></span>
+		</div>
+	</section>
+
+	<!-- ── Feed Generator Section ────────────────────────────────────────── -->
+	<section class="asae-ci-card" aria-labelledby="asae-ci-yt-gen-heading">
+		<h2 id="asae-ci-yt-gen-heading"><?php esc_html_e( 'Generate Feed', 'asae-content-ingestor' ); ?></h2>
+
+		<p class="description">
+			<?php esc_html_e( 'Fetches all videos from the saved channel/playlist and generates an Atom XML feed.', 'asae-content-ingestor' ); ?>
+		</p>
 
 		<div class="asae-ci-submit-row">
 			<button type="button" id="asae-ci-yt-generate-btn" class="button button-primary">

@@ -20,9 +20,13 @@
  * No external libraries are required; all dependencies are part of WordPress
  * core (fetch_feed / SimplePie, wp_remote_get, SimpleXMLElement).
  *
- * The RSS feed is treated purely as a directory of links. Article body content
- * is NOT read from the feed – each discovered link is later fetched individually
- * during the ingestion phase so that the full HTML page is parsed.
+ * The RSS feed is treated primarily as a directory of links. Article body
+ * content is NOT read from the feed – each discovered link is later fetched
+ * individually during the ingestion phase so that the full HTML page is parsed.
+ *
+ * Feed-level metadata (author, date, categories) can optionally be extracted
+ * via fetch_feed_metadata() and used as fallback values when the HTML parser
+ * cannot find them on the target page (e.g. YouTube video watch pages).
  *
  * @package ASAE_Content_Ingestor
  * @since   0.0.1 (BFS web crawler)
@@ -74,6 +78,39 @@ class ASAE_CI_Crawler {
 		// Reached when SimplePie returns 0 items, or when all items produced
 		// empty permalinks (e.g. due to an empty <id/> shadowing <link>).
 		return self::extract_from_xml( $feed_url, $url_restriction, $limit );
+	}
+
+	/**
+	 * Extracts per-item metadata (author, date, categories) from an RSS/Atom feed.
+	 *
+	 * Returns an associative array keyed by article URL, with each value containing
+	 * author, date, and tags extracted from the feed entry. This metadata can be
+	 * used as fallback when the HTML parser cannot extract these fields from the
+	 * target page (e.g. YouTube video watch pages).
+	 *
+	 * Uses the same two-strategy approach as fetch_feed_urls():
+	 *  1. SimplePie via fetch_feed()
+	 *  2. Direct XML parsing fallback
+	 *
+	 * @param string $feed_url        The URL of the RSS or Atom feed.
+	 * @param string $url_restriction Optional URL prefix filter.
+	 * @return array<string, array{author: string, date: string, tags: string[]}> URL → metadata map.
+	 */
+	public static function fetch_feed_metadata( string $feed_url, string $url_restriction = '' ): array {
+		// ── Strategy 1: SimplePie ─────────────────────────────────────────────
+		add_filter( 'wp_feed_cache_transient_lifetime', '__return_zero' );
+		$feed = fetch_feed( $feed_url );
+		remove_filter( 'wp_feed_cache_transient_lifetime', '__return_zero' );
+
+		if ( ! is_wp_error( $feed ) && $feed->get_item_quantity() > 0 ) {
+			$meta = self::metadata_from_simplepie( $feed, $url_restriction );
+			if ( ! empty( $meta ) ) {
+				return $meta;
+			}
+		}
+
+		// ── Strategy 2: Direct XML ────────────────────────────────────────────
+		return self::metadata_from_xml( $feed_url, $url_restriction );
 	}
 
 	/**
@@ -318,5 +355,191 @@ class ASAE_CI_Crawler {
 			return true;
 		}
 		return 0 === strncasecmp( $url, $restriction, strlen( $restriction ) );
+	}
+
+	// ── Private: Feed Metadata Extraction ────────────────────────────────────
+
+	/**
+	 * Extracts per-item metadata from a SimplePie feed object.
+	 *
+	 * @param SimplePie $feed            Parsed SimplePie feed.
+	 * @param string    $url_restriction Optional URL prefix filter.
+	 * @return array<string, array{author: string, date: string, tags: string[]}>
+	 */
+	private static function metadata_from_simplepie( $feed, string $url_restriction ): array {
+		$items = $feed->get_items( 0, $feed->get_item_quantity() );
+		$meta  = [];
+
+		foreach ( $items as $item ) {
+			$permalink = $item->get_permalink() ?: $item->get_link( 0 );
+			if ( empty( $permalink ) ) {
+				$tags = $item->get_item_tags( '', 'link' );
+				if ( ! empty( $tags[0]['data'] ) ) {
+					$permalink = self::normalise_url( $tags[0]['data'] );
+				}
+			}
+			if ( empty( $permalink ) ) {
+				continue;
+			}
+			$permalink = self::normalise_url( $permalink );
+
+			if ( ! self::passes_restriction( $permalink, $url_restriction ) ) {
+				continue;
+			}
+
+			// Author: SimplePie get_author().
+			$author_name = '';
+			$author_obj  = $item->get_author();
+			if ( $author_obj ) {
+				$author_name = $author_obj->get_name() ?: '';
+			}
+
+			// Date: SimplePie get_date() normalised to Y-m-d H:i:s.
+			$date     = '';
+			$date_raw = $item->get_date( 'U' );
+			if ( $date_raw ) {
+				$date = gmdate( 'Y-m-d H:i:s', (int) $date_raw );
+			}
+
+			// Tags/categories: SimplePie get_categories().
+			$tags_arr   = [];
+			$categories = $item->get_categories();
+			if ( $categories ) {
+				foreach ( $categories as $cat ) {
+					$label = $cat->get_label() ?: $cat->get_term();
+					if ( $label ) {
+						$tags_arr[] = trim( $label );
+					}
+				}
+			}
+
+			$meta[ $permalink ] = [
+				'author' => $author_name,
+				'date'   => $date,
+				'tags'   => array_unique( array_filter( $tags_arr ) ),
+			];
+		}
+
+		return $meta;
+	}
+
+	/**
+	 * Extracts per-item metadata from raw feed XML.
+	 *
+	 * @param string $feed_url        The feed URL.
+	 * @param string $url_restriction Optional URL prefix filter.
+	 * @return array<string, array{author: string, date: string, tags: string[]}>
+	 */
+	private static function metadata_from_xml( string $feed_url, string $url_restriction ): array {
+		$response = wp_remote_get( $feed_url, [
+			'timeout'    => 30,
+			'user-agent' => 'ASAE Content Ingestor/' . ASAE_CI_VERSION . ' (WordPress/' . get_bloginfo( 'version' ) . ')',
+			'sslverify'  => true,
+		] );
+
+		if ( is_wp_error( $response ) ) {
+			return [];
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( $code < 200 || $code >= 300 ) {
+			return [];
+		}
+
+		$body = wp_remote_retrieve_body( $response );
+		if ( empty( $body ) ) {
+			return [];
+		}
+
+		libxml_use_internal_errors( true );
+		$xml = simplexml_load_string( $body );
+		libxml_clear_errors();
+
+		if ( false === $xml ) {
+			return [];
+		}
+
+		$root = $xml->getName();
+		$meta = [];
+
+		if ( 'rss' === $root ) {
+			foreach ( $xml->channel->item ?? [] as $item ) {
+				$link = self::normalise_url( (string) $item->link );
+				if ( empty( $link ) || ! self::passes_restriction( $link, $url_restriction ) ) {
+					continue;
+				}
+
+				$author = trim( (string) ( $item->children( 'dc', true )->creator ?? '' ) );
+				if ( ! $author ) {
+					$author = trim( (string) ( $item->author ?? '' ) );
+				}
+
+				$date = '';
+				$pub  = (string) ( $item->pubDate ?? '' );
+				if ( $pub ) {
+					$ts = strtotime( $pub );
+					if ( $ts ) {
+						$date = gmdate( 'Y-m-d H:i:s', $ts );
+					}
+				}
+
+				$tags_arr = [];
+				foreach ( $item->category ?? [] as $cat ) {
+					$label = trim( (string) $cat );
+					if ( $label ) {
+						$tags_arr[] = $label;
+					}
+				}
+
+				$meta[ $link ] = [
+					'author' => $author,
+					'date'   => $date,
+					'tags'   => array_unique( array_filter( $tags_arr ) ),
+				];
+			}
+		} elseif ( 'feed' === $root ) {
+			// Register Atom namespace for XPath-free access.
+			$ns = $xml->getNamespaces( true );
+
+			foreach ( $xml->entry ?? [] as $entry ) {
+				$link = self::extract_atom_link( $entry );
+				if ( empty( $link ) || ! self::passes_restriction( $link, $url_restriction ) ) {
+					continue;
+				}
+
+				$author = '';
+				if ( isset( $entry->author->name ) ) {
+					$author = trim( (string) $entry->author->name );
+				}
+
+				$date = '';
+				$pub  = (string) ( $entry->published ?? $entry->updated ?? '' );
+				if ( $pub ) {
+					$ts = strtotime( $pub );
+					if ( $ts ) {
+						$date = gmdate( 'Y-m-d H:i:s', $ts );
+					}
+				}
+
+				$tags_arr = [];
+				foreach ( $entry->category ?? [] as $cat ) {
+					$term  = trim( (string) ( $cat['term']  ?? '' ) );
+					$label = trim( (string) ( $cat['label'] ?? '' ) );
+					if ( $label ) {
+						$tags_arr[] = $label;
+					} elseif ( $term ) {
+						$tags_arr[] = $term;
+					}
+				}
+
+				$meta[ $link ] = [
+					'author' => $author,
+					'date'   => $date,
+					'tags'   => array_unique( array_filter( $tags_arr ) ),
+				];
+			}
+		}
+
+		return $meta;
 	}
 }

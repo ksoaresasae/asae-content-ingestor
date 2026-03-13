@@ -57,8 +57,9 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_apply_categories',   [ __CLASS__, 'ajax_apply_categories' ] );
 
 		// YouTube Feed tab.
-		add_action( 'wp_ajax_asae_ci_save_youtube_key',      [ __CLASS__, 'ajax_save_youtube_key' ] );
-		add_action( 'wp_ajax_asae_ci_generate_youtube_feed', [ __CLASS__, 'ajax_generate_youtube_feed' ] );
+		add_action( 'wp_ajax_asae_ci_save_youtube_key',        [ __CLASS__, 'ajax_save_youtube_key' ] );
+		add_action( 'wp_ajax_asae_ci_save_youtube_channel_id', [ __CLASS__, 'ajax_save_youtube_channel_id' ] );
+		add_action( 'wp_ajax_asae_ci_generate_youtube_feed',   [ __CLASS__, 'ajax_generate_youtube_feed' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -587,11 +588,35 @@ class ASAE_CI_Admin {
 	}
 
 	/**
-	 * AJAX: Fetches all videos from a YouTube channel/playlist and generates
-	 * an Atom XML feed file. Returns the feed URL, video count, and the full
-	 * video list for client-side preview rendering.
-	 *
+	 * AJAX: Saves the YouTube channel/playlist ID.
 	 * Expects POST param: channel_id.
+	 *
+	 * @return void
+	 */
+	public static function ajax_save_youtube_channel_id(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$channel_id = sanitize_text_field( wp_unslash( $_POST['channel_id'] ?? '' ) );
+
+		if ( empty( $channel_id ) ) {
+			wp_send_json_error( [ 'message' => __( 'Channel or playlist ID cannot be empty.', 'asae-content-ingestor' ) ] );
+		}
+
+		update_option( ASAE_CI_YouTube::OPTION_CHANNEL_ID, $channel_id, false );
+
+		wp_send_json_success( [
+			'message' => __( 'Channel ID saved.', 'asae-content-ingestor' ),
+			'mask'    => self::mask_api_key( $channel_id ),
+		] );
+	}
+
+	/**
+	 * AJAX: Fetches all videos from the saved YouTube channel/playlist and
+	 * generates an Atom XML feed file. Returns the feed URL, video count,
+	 * and the full video list for client-side preview rendering.
+	 *
+	 * Uses the previously saved channel/playlist ID.
 	 *
 	 * @return void
 	 */
@@ -599,19 +624,16 @@ class ASAE_CI_Admin {
 		self::verify_ajax_nonce();
 		self::verify_admin_capability();
 
-		$channel_id = sanitize_text_field( wp_unslash( $_POST['channel_id'] ?? '' ) );
+		$channel_id = get_option( ASAE_CI_YouTube::OPTION_CHANNEL_ID, '' );
 
 		if ( empty( $channel_id ) ) {
-			wp_send_json_error( [ 'message' => __( 'Channel or playlist ID is required.', 'asae-content-ingestor' ) ] );
+			wp_send_json_error( [ 'message' => __( 'No channel or playlist ID saved. Please save one first.', 'asae-content-ingestor' ) ] );
 		}
 
 		$api_key = get_option( ASAE_CI_YouTube::OPTION_API_KEY, '' );
 		if ( empty( $api_key ) ) {
 			wp_send_json_error( [ 'message' => __( 'No YouTube API key saved. Please save an API key first.', 'asae-content-ingestor' ) ] );
 		}
-
-		// Persist the channel ID for display on future page loads.
-		update_option( ASAE_CI_YouTube::OPTION_CHANNEL_ID, $channel_id, false );
 
 		$playlist_id = ASAE_CI_YouTube::normalize_playlist_id( $channel_id );
 
@@ -647,11 +669,10 @@ class ASAE_CI_Admin {
 		}, $videos );
 
 		wp_send_json_success( [
-			'feed_url'        => $url,
-			'video_count'     => count( $videos ),
-			'channel_title'   => $channel_title,
-			'videos'          => $video_list,
-			'channel_id_mask' => self::mask_api_key( $channel_id ),
+			'feed_url'      => $url,
+			'video_count'   => count( $videos ),
+			'channel_title' => $channel_title,
+			'videos'        => $video_list,
 		] );
 	}
 

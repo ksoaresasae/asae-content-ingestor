@@ -819,16 +819,58 @@
 			} );
 		} );
 
-		// ── Generate Feed ────────────────────────────────────────────────
+		// ── Save Channel ID ─────────────────────────────────────────────
 
-		$ytGenBtn.on( 'click', function () {
+		var $ytSaveChBtn = $( '#asae-ci-yt-save-channel-btn' );
+		var $ytChMsg     = $( '#asae-ci-yt-channel-msg' );
+
+		$ytSaveChBtn.on( 'click', function () {
 			var channelId = $.trim( $ytChannelId.val() );
 			if ( ! channelId ) {
-				$ytGenMsg.text( asaeCi.strings.ytChannelError ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+				$ytChMsg.text( asaeCi.strings.ytChannelError ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
 				$ytChannelId.trigger( 'focus' );
 				return;
 			}
 
+			$ytSaveChBtn.prop( 'disabled', true ).text( 'Saving\u2026' );
+			$ytChMsg.text( '' );
+
+			$.ajax( {
+				url    : asaeCi.ajaxUrl,
+				method : 'POST',
+				data   : {
+					action     : 'asae_ci_save_youtube_channel_id',
+					nonce      : asaeCi.nonce,
+					channel_id : channelId,
+				},
+			} )
+			.done( function ( response ) {
+				$ytSaveChBtn.prop( 'disabled', false ).text( 'Save Channel ID' );
+				if ( response.success ) {
+					$ytChMsg.text( response.data.message || 'Saved.' ).removeClass( 'asae-ci-yt-msg-err' ).addClass( 'asae-ci-yt-msg-ok' );
+					$ytChannelId.val( '' );
+					// Update the displayed mask.
+					var $chStatus = $( '#asae-ci-yt-channel-status' );
+					if ( $chStatus.length ) {
+						$chStatus.find( 'code' ).text( response.data.mask );
+					} else {
+						$( '#asae-ci-yt-channel-heading' ).after(
+							'<p class="asae-ci-yt-key-status" id="asae-ci-yt-channel-status">' + escHtml( 'Saved ID:' ) + ' <code>' + escHtml( response.data.mask ) + '</code></p>'
+						);
+					}
+				} else {
+					$ytChMsg.text( response.data.message || 'Error saving.' ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+				}
+			} )
+			.fail( function () {
+				$ytSaveChBtn.prop( 'disabled', false ).text( 'Save Channel ID' );
+				$ytChMsg.text( 'Network error.' ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+			} );
+		} );
+
+		// ── Generate Feed ────────────────────────────────────────────────
+
+		$ytGenBtn.on( 'click', function () {
 			$ytGenBtn.prop( 'disabled', true );
 			$ytGenMsg.text( '' );
 			$ytProgress.removeClass( 'asae-ci-hidden' );
@@ -840,9 +882,8 @@
 				method  : 'POST',
 				timeout : 300000, // 5 minutes — large channels may take time.
 				data    : {
-					action     : 'asae_ci_generate_youtube_feed',
-					nonce      : asaeCi.nonce,
-					channel_id : channelId,
+					action : 'asae_ci_generate_youtube_feed',
+					nonce  : asaeCi.nonce,
 				},
 			} )
 			.done( function ( response ) {
@@ -856,18 +897,6 @@
 
 				var data = response.data;
 				$ytGenMsg.text( 'Done! Found ' + data.video_count + ' videos.' ).removeClass( 'asae-ci-yt-msg-err' ).addClass( 'asae-ci-yt-msg-ok' );
-
-				// Update the saved channel ID display.
-				if ( data.channel_id_mask ) {
-					var $chStatus = $( '#asae-ci-yt-channel-status' );
-					if ( $chStatus.length ) {
-						$chStatus.find( 'code' ).text( data.channel_id_mask );
-					} else {
-						$( '#asae-ci-yt-gen-heading' ).after(
-							'<p class="asae-ci-yt-key-status" id="asae-ci-yt-channel-status">' + escHtml( 'Saved ID:' ) + ' <code>' + escHtml( data.channel_id_mask ) + '</code></p>'
-						);
-					}
-				}
 
 				// Store videos and render preview table.
 				ytVideos      = data.videos || [];
