@@ -46,6 +46,7 @@ $options_to_delete = [
 	'asae_ci_version',
 	'asae_ci_db_version',
 	'asae_ci_youtube_api_key',
+	'asae_ci_youtube_channel_id',
 ];
 
 foreach ( $options_to_delete as $option ) {

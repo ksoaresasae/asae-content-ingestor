@@ -98,6 +98,13 @@ if ( ! current_user_can( 'manage_options' ) ) {
 	<section class="asae-ci-card" aria-labelledby="asae-ci-yt-gen-heading">
 		<h2 id="asae-ci-yt-gen-heading"><?php esc_html_e( 'Generate Feed', 'asae-content-ingestor' ); ?></h2>
 
+		<?php if ( $yt_channel_id_saved ) : ?>
+		<p class="asae-ci-yt-key-status" id="asae-ci-yt-channel-status">
+			<?php esc_html_e( 'Saved ID:', 'asae-content-ingestor' ); ?>
+			<code><?php echo esc_html( $yt_channel_id_mask ); ?></code>
+		</p>
+		<?php endif; ?>
+
 		<div class="asae-ci-field">
 			<label for="asae-ci-yt-channel-id">
 				<?php esc_html_e( 'Channel ID or Uploads Playlist ID', 'asae-content-ingestor' ); ?>
@@ -107,6 +114,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 				id="asae-ci-yt-channel-id"
 				class="regular-text"
 				placeholder="UCxxxxxxxxxxxxxxxxxxxxxxxx"
+				<?php if ( $yt_channel_id_saved ) : ?>value="<?php echo esc_attr( $yt_channel_id ); ?>"<?php endif; ?>
 				aria-describedby="asae-ci-yt-channel-hint"
 			/>
 			<p id="asae-ci-yt-channel-hint" class="description">

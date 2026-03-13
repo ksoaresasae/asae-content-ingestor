@@ -25,6 +25,9 @@ class ASAE_CI_YouTube {
 	/** WP option key for the stored API key. */
 	const OPTION_API_KEY = 'asae_ci_youtube_api_key';
 
+	/** WP option key for the stored channel/playlist ID. */
+	const OPTION_CHANNEL_ID = 'asae_ci_youtube_channel_id';
+
 	/** Directory inside wp-content/uploads where the feed file is stored. */
 	const UPLOAD_SUBDIR = 'asae-ci';
 
@@ -58,6 +61,11 @@ class ASAE_CI_YouTube {
 
 			$response = wp_remote_get( $url, [
 				'timeout' => 30,
+				'headers' => [
+					// Google API key HTTP referrer restrictions check this header.
+					// Without it, keys restricted to a domain will reject the request.
+					'Referer' => home_url( '/' ),
+				],
 			] );
 
 			if ( is_wp_error( $response ) ) {

@@ -186,10 +186,13 @@ class ASAE_CI_Admin {
 			}
 		} elseif ( 'youtube' === $active_tab ) {
 			// YouTube Feed tab.
-			$yt_api_key       = get_option( ASAE_CI_YouTube::OPTION_API_KEY, '' );
-			$yt_api_key_saved = (bool) $yt_api_key;
-			$yt_api_key_mask  = $yt_api_key ? self::mask_api_key( $yt_api_key ) : '';
-			$yt_feed_status   = ASAE_CI_YouTube::get_feed_status();
+			$yt_api_key          = get_option( ASAE_CI_YouTube::OPTION_API_KEY, '' );
+			$yt_api_key_saved    = (bool) $yt_api_key;
+			$yt_api_key_mask     = $yt_api_key ? self::mask_api_key( $yt_api_key ) : '';
+			$yt_channel_id       = get_option( ASAE_CI_YouTube::OPTION_CHANNEL_ID, '' );
+			$yt_channel_id_saved = (bool) $yt_channel_id;
+			$yt_channel_id_mask  = $yt_channel_id ? self::mask_api_key( $yt_channel_id ) : '';
+			$yt_feed_status      = ASAE_CI_YouTube::get_feed_status();
 			$view             = ASAE_CI_PATH . 'admin/views/page-youtube.php';
 		} else {
 			// Run tab (default).
@@ -607,6 +610,9 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'No YouTube API key saved. Please save an API key first.', 'asae-content-ingestor' ) ] );
 		}
 
+		// Persist the channel ID for display on future page loads.
+		update_option( ASAE_CI_YouTube::OPTION_CHANNEL_ID, $channel_id, false );
+
 		$playlist_id = ASAE_CI_YouTube::normalize_playlist_id( $channel_id );
 
 		// Fetch all videos from the playlist.
@@ -641,10 +647,11 @@ class ASAE_CI_Admin {
 		}, $videos );
 
 		wp_send_json_success( [
-			'feed_url'      => $url,
-			'video_count'   => count( $videos ),
-			'channel_title' => $channel_title,
-			'videos'        => $video_list,
+			'feed_url'        => $url,
+			'video_count'     => count( $videos ),
+			'channel_title'   => $channel_title,
+			'videos'          => $video_list,
+			'channel_id_mask' => self::mask_api_key( $channel_id ),
 		] );
 	}
 

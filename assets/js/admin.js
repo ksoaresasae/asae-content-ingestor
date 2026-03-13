@@ -857,6 +857,18 @@
 				var data = response.data;
 				$ytGenMsg.text( 'Done! Found ' + data.video_count + ' videos.' ).removeClass( 'asae-ci-yt-msg-err' ).addClass( 'asae-ci-yt-msg-ok' );
 
+				// Update the saved channel ID display.
+				if ( data.channel_id_mask ) {
+					var $chStatus = $( '#asae-ci-yt-channel-status' );
+					if ( $chStatus.length ) {
+						$chStatus.find( 'code' ).text( data.channel_id_mask );
+					} else {
+						$( '#asae-ci-yt-gen-heading' ).after(
+							'<p class="asae-ci-yt-key-status" id="asae-ci-yt-channel-status">' + escHtml( 'Saved ID:' ) + ' <code>' + escHtml( data.channel_id_mask ) + '</code></p>'
+						);
+					}
+				}
+
 				// Store videos and render preview table.
 				ytVideos      = data.videos || [];
 				ytCurrentPage = 1;
