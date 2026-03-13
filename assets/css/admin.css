@@ -546,3 +546,96 @@ fieldset.asae-ci-field legend {
 		padding: 1em;
 	}
 }
+
+/* ── YouTube Feed Tab ─────────────────────────────────────────────────────── */
+
+/* Text input for channel ID reuses the URL input styles. */
+.asae-ci-field input[type="text"],
+.asae-ci-field input[type="password"] {
+	display: block;
+	width: 100%;
+	max-width: 540px;
+	padding: .45rem .6rem;
+	border: 1px solid #8c8f94;
+	border-radius: 3px;
+	font-size: 1rem;
+	color: #1d2327;
+	background: #fff;
+	transition: border-color .15s;
+}
+
+.asae-ci-field input[type="text"]:focus,
+.asae-ci-field input[type="password"]:focus {
+	border-color: #2271b1;
+	outline: 3px solid #2271b1;
+	outline-offset: 1px;
+	box-shadow: none;
+}
+
+/* Saved API key display */
+.asae-ci-yt-key-status {
+	margin-bottom: .75rem;
+	color: #3c434a;
+}
+
+.asae-ci-yt-key-status code {
+	font-size: .9375rem;
+	padding: 2px 6px;
+	background: #f0f0f0;
+	border-radius: 3px;
+}
+
+/* Inline status messages (success/error) */
+.asae-ci-yt-inline-msg {
+	font-size: .875rem;
+	font-weight: 600;
+}
+
+.asae-ci-yt-msg-ok {
+	color: #1d7444;     /* WP success green; contrast ≥ 4.5:1 on white */
+}
+
+.asae-ci-yt-msg-err {
+	color: #d63638;     /* WP error red; contrast ≥ 4.5:1 on white */
+}
+
+/* Progress text during fetch */
+.asae-ci-yt-progress-text {
+	margin: .75rem 0 0;
+	font-style: italic;
+	color: #646970;
+}
+
+/* Video preview table */
+.asae-ci-yt-video-table {
+	width: 100%;
+	border-collapse: collapse;
+	margin-top: 1rem;
+	font-size: .875rem;
+}
+
+.asae-ci-yt-video-table th,
+.asae-ci-yt-video-table td {
+	padding: .5rem .75rem;
+	text-align: left;
+	border-bottom: 1px solid #f0f0f0;
+	vertical-align: top;
+}
+
+.asae-ci-yt-video-table th {
+	background: #f6f7f7;
+	font-weight: 600;
+	color: #1d2327;
+	white-space: nowrap;
+}
+
+.asae-ci-yt-video-table tr:hover td {
+	background: #f9f9f9;
+}
+
+/* Action buttons row */
+.asae-ci-yt-actions {
+	display: flex;
+	gap: .75rem;
+	flex-wrap: wrap;
+}

@@ -55,6 +55,10 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_delete_report',      [ __CLASS__, 'ajax_delete_report' ] );
 		add_action( 'wp_ajax_asae_ci_dismiss_cap_notice', [ __CLASS__, 'ajax_dismiss_cap_notice' ] );
 		add_action( 'wp_ajax_asae_ci_apply_categories',   [ __CLASS__, 'ajax_apply_categories' ] );
+
+		// YouTube Feed tab.
+		add_action( 'wp_ajax_asae_ci_save_youtube_key',      [ __CLASS__, 'ajax_save_youtube_key' ] );
+		add_action( 'wp_ajax_asae_ci_generate_youtube_feed', [ __CLASS__, 'ajax_generate_youtube_feed' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -120,6 +124,12 @@ class ASAE_CI_Admin {
 				'needsReview'    => __( 'Category review required.', 'asae-content-ingestor' ),
 				'failed'         => __( 'An error occurred.', 'asae-content-ingestor' ),
 				'confirmDelete'  => __( 'Delete this report? This cannot be undone.', 'asae-content-ingestor' ),
+				// YouTube tab strings.
+				'ytKeySaved'     => __( 'API key saved.', 'asae-content-ingestor' ),
+				'ytKeyError'     => __( 'Please enter an API key.', 'asae-content-ingestor' ),
+				'ytFetching'     => __( 'Fetching videos…', 'asae-content-ingestor' ),
+				'ytChannelError' => __( 'Please enter a channel or playlist ID.', 'asae-content-ingestor' ),
+				'ytNoKey'        => __( 'Please save a YouTube API key first.', 'asae-content-ingestor' ),
 			],
 		] );
 	}
@@ -150,7 +160,7 @@ class ASAE_CI_Admin {
 		}
 
 		$active_tab = sanitize_key( $_GET['tab'] ?? 'run' );
-		if ( ! in_array( $active_tab, [ 'run', 'reports' ], true ) ) {
+		if ( ! in_array( $active_tab, [ 'run', 'reports', 'youtube' ], true ) ) {
 			$active_tab = 'run';
 		}
 
@@ -170,6 +180,13 @@ class ASAE_CI_Admin {
 				$reports_data = ASAE_CI_Reports::get_reports( $page, 20 );
 				$view         = ASAE_CI_PATH . 'admin/views/page-reports.php';
 			}
+		} elseif ( 'youtube' === $active_tab ) {
+			// YouTube Feed tab.
+			$yt_api_key       = get_option( ASAE_CI_YouTube::OPTION_API_KEY, '' );
+			$yt_api_key_saved = (bool) $yt_api_key;
+			$yt_api_key_mask  = $yt_api_key ? self::mask_api_key( $yt_api_key ) : '';
+			$yt_feed_status   = ASAE_CI_YouTube::get_feed_status();
+			$view             = ASAE_CI_PATH . 'admin/views/page-youtube.php';
 		} else {
 			// Run tab (default).
 			$active_tab           = 'run';
@@ -534,5 +551,110 @@ class ASAE_CI_Admin {
 			],
 			'objects'
 		);
+	}
+
+	// ── YouTube Feed Tab AJAX Handlers ────────────────────────────────────
+
+	/**
+	 * AJAX: Saves the YouTube Data API v3 key.
+	 * Expects POST param: yt_api_key.
+	 *
+	 * @return void
+	 */
+	public static function ajax_save_youtube_key(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$api_key = sanitize_text_field( wp_unslash( $_POST['yt_api_key'] ?? '' ) );
+
+		if ( empty( $api_key ) ) {
+			wp_send_json_error( [ 'message' => __( 'API key cannot be empty.', 'asae-content-ingestor' ) ] );
+		}
+
+		update_option( ASAE_CI_YouTube::OPTION_API_KEY, $api_key, false );
+
+		wp_send_json_success( [
+			'message' => __( 'API key saved.', 'asae-content-ingestor' ),
+			'mask'    => self::mask_api_key( $api_key ),
+		] );
+	}
+
+	/**
+	 * AJAX: Fetches all videos from a YouTube channel/playlist and generates
+	 * an Atom XML feed file. Returns the feed URL, video count, and the full
+	 * video list for client-side preview rendering.
+	 *
+	 * Expects POST param: channel_id.
+	 *
+	 * @return void
+	 */
+	public static function ajax_generate_youtube_feed(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$channel_id = sanitize_text_field( wp_unslash( $_POST['channel_id'] ?? '' ) );
+
+		if ( empty( $channel_id ) ) {
+			wp_send_json_error( [ 'message' => __( 'Channel or playlist ID is required.', 'asae-content-ingestor' ) ] );
+		}
+
+		$api_key = get_option( ASAE_CI_YouTube::OPTION_API_KEY, '' );
+		if ( empty( $api_key ) ) {
+			wp_send_json_error( [ 'message' => __( 'No YouTube API key saved. Please save an API key first.', 'asae-content-ingestor' ) ] );
+		}
+
+		$playlist_id = ASAE_CI_YouTube::normalize_playlist_id( $channel_id );
+
+		// Fetch all videos from the playlist.
+		$videos = ASAE_CI_YouTube::fetch_all_videos( $playlist_id, $api_key );
+
+		if ( is_wp_error( $videos ) ) {
+			wp_send_json_error( [ 'message' => $videos->get_error_message() ] );
+		}
+
+		if ( empty( $videos ) ) {
+			wp_send_json_error( [ 'message' => __( 'No videos found in this channel or playlist.', 'asae-content-ingestor' ) ] );
+		}
+
+		// Determine channel title from the first video.
+		$channel_title = $videos[0]['channel_title'] ?? '';
+
+		// Generate and save the feed.
+		$xml = ASAE_CI_YouTube::generate_feed( $videos, $channel_title );
+		$url = ASAE_CI_YouTube::save_feed( $xml );
+
+		if ( is_wp_error( $url ) ) {
+			wp_send_json_error( [ 'message' => $url->get_error_message() ] );
+		}
+
+		// Build the video list for client-side preview table.
+		$video_list = array_map( static function ( $v ) {
+			return [
+				'title'        => $v['title'],
+				'published_at' => $v['published_at'],
+				'url'          => 'https://www.youtube.com/watch?v=' . rawurlencode( $v['id'] ),
+			];
+		}, $videos );
+
+		wp_send_json_success( [
+			'feed_url'      => $url,
+			'video_count'   => count( $videos ),
+			'channel_title' => $channel_title,
+			'videos'        => $video_list,
+		] );
+	}
+
+	/**
+	 * Masks an API key for safe display: shows first 4 and last 4 characters.
+	 *
+	 * @param string $key The full API key.
+	 * @return string Masked key (e.g. "AIza••••••••cX9Q").
+	 */
+	private static function mask_api_key( string $key ): string {
+		$len = strlen( $key );
+		if ( $len <= 8 ) {
+			return str_repeat( '•', $len );
+		}
+		return substr( $key, 0, 4 ) . str_repeat( '•', $len - 8 ) . substr( $key, -4 );
 	}
 }

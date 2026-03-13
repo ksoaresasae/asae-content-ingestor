@@ -45,6 +45,7 @@ wp_clear_scheduled_hook( ASAE_CI_CRON_HOOK );
 $options_to_delete = [
 	'asae_ci_version',
 	'asae_ci_db_version',
+	'asae_ci_youtube_api_key',
 ];
 
 foreach ( $options_to_delete as $option ) {

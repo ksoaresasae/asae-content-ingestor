@@ -45,6 +45,10 @@ $report_date = date_i18n(
 		   aria-current="page">
 			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
 		</a>
+		<a href="<?php echo esc_url( admin_url( 'tools.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
+		   class="nav-tab">
+			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
+		</a>
 	</nav>
 
 	<p>

@@ -64,6 +64,17 @@
 	var dryResultsData    = [];   // Full dry-run result objects for the preview modal.
 	var modalTrigger      = null; // Button that opened the modal (for focus restoration).
 
+	// ── Prefill Feed URL from YouTube Tab ────────────────────────────────────
+
+	// When arriving from the YouTube tab via "Use in Run Tab →", auto-fill the source URL.
+	( function () {
+		var params = new URLSearchParams( window.location.search );
+		var prefill = params.get( 'prefill_feed' );
+		if ( prefill && $( '#asae-ci-source-url' ).length ) {
+			$( '#asae-ci-source-url' ).val( prefill );
+		}
+	} )();
+
 	// ── Form Submission ──────────────────────────────────────────────────────
 
 	$form.on( 'submit', function ( e ) {
@@ -737,6 +748,194 @@
 	function escAttr( str ) {
 		return $( '<span>' ).attr( 'data-v', String( str ) ).prop( 'outerHTML' )
 		       .replace( /^.*data-v="/, '' ).replace( /".*$/, '' );
+	}
+
+	// ── YouTube Feed Tab ─────────────────────────────────────────────────────
+
+	// Only initialise YouTube handlers when the YouTube tab is active.
+	if ( $( '#asae-ci-youtube-app' ).length ) {
+		var $ytKeyInput   = $( '#asae-ci-yt-api-key' );
+		var $ytSaveKeyBtn = $( '#asae-ci-yt-save-key-btn' );
+		var $ytKeyMsg     = $( '#asae-ci-yt-key-msg' );
+		var $ytChannelId  = $( '#asae-ci-yt-channel-id' );
+		var $ytGenBtn     = $( '#asae-ci-yt-generate-btn' );
+		var $ytGenMsg     = $( '#asae-ci-yt-gen-msg' );
+		var $ytProgress   = $( '#asae-ci-yt-progress' );
+		var $ytProgressTx = $( '#asae-ci-yt-progress-text' );
+		var $ytResults    = $( '#asae-ci-yt-results-panel' );
+		var $ytSummary    = $( '#asae-ci-yt-results-summary' );
+		var $ytTableWrap  = $( '#asae-ci-yt-table-wrap' );
+		var $ytPagination = $( '#asae-ci-yt-pagination' );
+		var $ytUseFeedBtn = $( '#asae-ci-yt-use-feed-btn' );
+		var $ytDownloadBtn = $( '#asae-ci-yt-download-feed-btn' );
+
+		var ytVideos      = [];  // Full video list from the server.
+		var ytPerPage     = 50;
+		var ytCurrentPage = 1;
+
+		// ── Save API Key ─────────────────────────────────────────────────
+
+		$ytSaveKeyBtn.on( 'click', function () {
+			var key = $.trim( $ytKeyInput.val() );
+			if ( ! key ) {
+				$ytKeyMsg.text( asaeCi.strings.ytKeyError ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+				$ytKeyInput.trigger( 'focus' );
+				return;
+			}
+
+			$ytSaveKeyBtn.prop( 'disabled', true ).text( 'Saving…' );
+			$ytKeyMsg.text( '' );
+
+			$.ajax( {
+				url    : asaeCi.ajaxUrl,
+				method : 'POST',
+				data   : {
+					action     : 'asae_ci_save_youtube_key',
+					nonce      : asaeCi.nonce,
+					yt_api_key : key,
+				},
+			} )
+			.done( function ( response ) {
+				$ytSaveKeyBtn.prop( 'disabled', false ).text( 'Save API Key' );
+				if ( response.success ) {
+					$ytKeyMsg.text( asaeCi.strings.ytKeySaved ).removeClass( 'asae-ci-yt-msg-err' ).addClass( 'asae-ci-yt-msg-ok' );
+					$ytKeyInput.val( '' );
+					// Update the displayed mask.
+					var $status = $( '.asae-ci-yt-key-status' );
+					if ( $status.length ) {
+						$status.find( 'code' ).text( response.data.mask );
+					} else {
+						$( '#asae-ci-yt-key-heading' ).after(
+							'<p class="asae-ci-yt-key-status">' + escHtml( 'Saved key:' ) + ' <code>' + escHtml( response.data.mask ) + '</code></p>'
+						);
+					}
+				} else {
+					$ytKeyMsg.text( response.data.message || 'Error saving key.' ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+				}
+			} )
+			.fail( function () {
+				$ytSaveKeyBtn.prop( 'disabled', false ).text( 'Save API Key' );
+				$ytKeyMsg.text( 'Network error.' ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+			} );
+		} );
+
+		// ── Generate Feed ────────────────────────────────────────────────
+
+		$ytGenBtn.on( 'click', function () {
+			var channelId = $.trim( $ytChannelId.val() );
+			if ( ! channelId ) {
+				$ytGenMsg.text( asaeCi.strings.ytChannelError ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+				$ytChannelId.trigger( 'focus' );
+				return;
+			}
+
+			$ytGenBtn.prop( 'disabled', true );
+			$ytGenMsg.text( '' );
+			$ytProgress.removeClass( 'asae-ci-hidden' );
+			$ytProgressTx.text( asaeCi.strings.ytFetching );
+			$ytResults.addClass( 'asae-ci-hidden' );
+
+			$.ajax( {
+				url     : asaeCi.ajaxUrl,
+				method  : 'POST',
+				timeout : 300000, // 5 minutes — large channels may take time.
+				data    : {
+					action     : 'asae_ci_generate_youtube_feed',
+					nonce      : asaeCi.nonce,
+					channel_id : channelId,
+				},
+			} )
+			.done( function ( response ) {
+				$ytGenBtn.prop( 'disabled', false );
+				$ytProgress.addClass( 'asae-ci-hidden' );
+
+				if ( ! response.success ) {
+					$ytGenMsg.text( response.data.message || 'Error.' ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+					return;
+				}
+
+				var data = response.data;
+				$ytGenMsg.text( 'Done! Found ' + data.video_count + ' videos.' ).removeClass( 'asae-ci-yt-msg-err' ).addClass( 'asae-ci-yt-msg-ok' );
+
+				// Store videos and render preview table.
+				ytVideos      = data.videos || [];
+				ytCurrentPage = 1;
+
+				$ytSummary.text( 'Found ' + data.video_count + ' videos from ' + ( data.channel_title || 'YouTube channel' ) + '.' );
+				renderYtVideoTable();
+
+				// Set action button URLs.
+				var feedUrl = data.feed_url;
+				$ytUseFeedBtn.attr( 'href', 'tools.php?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( feedUrl ) );
+				$ytDownloadBtn.attr( 'href', feedUrl );
+
+				$ytResults.removeClass( 'asae-ci-hidden' );
+				$( 'html, body' ).animate( { scrollTop: $ytResults.offset().top - 40 }, 400 );
+			} )
+			.fail( function () {
+				$ytGenBtn.prop( 'disabled', false );
+				$ytProgress.addClass( 'asae-ci-hidden' );
+				$ytGenMsg.text( 'Network error or timeout. Please try again.' ).removeClass( 'asae-ci-yt-msg-ok' ).addClass( 'asae-ci-yt-msg-err' );
+			} );
+		} );
+
+		// ── Video Preview Table (client-side pagination) ─────────────────
+
+		function renderYtVideoTable() {
+			if ( ! ytVideos.length ) {
+				$ytTableWrap.html( '<p>No videos found.</p>' );
+				$ytPagination.addClass( 'asae-ci-hidden' );
+				return;
+			}
+
+			var totalPages = Math.ceil( ytVideos.length / ytPerPage );
+			var start      = ( ytCurrentPage - 1 ) * ytPerPage;
+			var pageItems  = ytVideos.slice( start, start + ytPerPage );
+
+			var rows = pageItems.map( function ( v, idx ) {
+				var num      = start + idx + 1;
+				var dateText = v.published_at ? v.published_at.replace( /T.*$/, '' ) : '—';
+				return '<tr>' +
+					'<td>' + num + '</td>' +
+					'<td>' + escHtml( v.title || '(untitled)' ) + '</td>' +
+					'<td>' + escHtml( dateText ) + '</td>' +
+					'<td class="asae-ci-url-cell"><a href="' + escAttr( v.url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( v.url ) + '</a></td>' +
+					'</tr>';
+			} );
+
+			var html = '<table class="wp-list-table widefat striped asae-ci-yt-video-table">' +
+				'<caption class="screen-reader-text">YouTube video list</caption>' +
+				'<thead><tr>' +
+				'<th scope="col">#</th>' +
+				'<th scope="col">Title</th>' +
+				'<th scope="col">Published</th>' +
+				'<th scope="col">URL</th>' +
+				'</tr></thead>' +
+				'<tbody>' + rows.join( '' ) + '</tbody>' +
+				'</table>';
+
+			$ytTableWrap.html( html );
+
+			// Render pagination.
+			if ( totalPages > 1 ) {
+				var pagBtns = '';
+				for ( var p = 1; p <= totalPages; p++ ) {
+					var active = ( p === ytCurrentPage ) ? ' button-primary' : '';
+					var aria   = ( p === ytCurrentPage ) ? ' aria-current="page"' : '';
+					pagBtns += '<button type="button" class="button asae-ci-yt-page-btn' + active + '" data-page="' + p + '"' + aria + '>' + p + '</button>';
+				}
+				$ytPagination.html( pagBtns ).removeClass( 'asae-ci-hidden' );
+			} else {
+				$ytPagination.addClass( 'asae-ci-hidden' );
+			}
+		}
+
+		// Pagination button clicks.
+		$( document ).on( 'click', '.asae-ci-yt-page-btn', function () {
+			ytCurrentPage = parseInt( $( this ).data( 'page' ), 10 ) || 1;
+			renderYtVideoTable();
+			$( 'html, body' ).animate( { scrollTop: $ytTableWrap.offset().top - 40 }, 200 );
+		} );
 	}
 
 } )( jQuery );
