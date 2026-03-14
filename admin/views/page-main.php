@@ -338,15 +338,55 @@ if ( ! current_user_can( 'manage_options' ) ) {
 	>
 		<h2 id="asae-ci-review-heading"><?php esc_html_e( 'Category Review Required', 'asae-content-ingestor' ); ?></h2>
 		<p class="description">
-			<?php esc_html_e( 'The following items could not be automatically matched to an existing category. Select a category for each item and click Apply to publish them.', 'asae-content-ingestor' ); ?>
+			<?php esc_html_e( 'The following items could not be automatically matched to an existing category. Select a category for each item and click Apply to publish them. You can also apply one category to all items at once.', 'asae-content-ingestor' ); ?>
 		</p>
-		<div id="asae-ci-review-table-wrap">
-			<!-- Populated dynamically by admin.js -->
+
+		<!-- Toolbar: progress counter, search, bulk actions -->
+		<div id="asae-ci-review-toolbar" class="asae-ci-review-toolbar asae-ci-hidden">
+			<div class="asae-ci-review-toolbar-left">
+				<span id="asae-ci-review-progress" aria-live="polite"></span>
+			</div>
+			<div class="asae-ci-review-toolbar-right">
+				<label for="asae-ci-review-search" class="screen-reader-text">
+					<?php esc_html_e( 'Filter by title', 'asae-content-ingestor' ); ?>
+				</label>
+				<input
+					type="search"
+					id="asae-ci-review-search"
+					class="asae-ci-review-search"
+					placeholder="<?php esc_attr_e( 'Filter by title\u2026', 'asae-content-ingestor' ); ?>"
+				>
+			</div>
 		</div>
+
+		<!-- Bulk apply-to-all row -->
+		<div id="asae-ci-review-bulk-row" class="asae-ci-review-bulk-row asae-ci-hidden">
+			<label for="asae-ci-review-bulk-cat">
+				<?php esc_html_e( 'Apply one category to all visible:', 'asae-content-ingestor' ); ?>
+			</label>
+			<select id="asae-ci-review-bulk-cat" class="asae-ci-field">
+				<option value=""><?php esc_html_e( '— Select —', 'asae-content-ingestor' ); ?></option>
+			</select>
+			<span class="asae-ci-review-bulk-separator"><?php esc_html_e( 'or', 'asae-content-ingestor' ); ?></span>
+			<button type="button" id="asae-ci-apply-all-btn" class="button" disabled>
+				<?php esc_html_e( 'Apply to ALL items', 'asae-content-ingestor' ); ?>
+			</button>
+		</div>
+
+		<!-- Table content (populated by JS) -->
+		<div id="asae-ci-review-table-wrap"></div>
+
+		<!-- Pagination -->
+		<div id="asae-ci-review-pagination" class="asae-ci-pagination asae-ci-hidden"
+			 role="navigation" aria-label="<?php esc_attr_e( 'Review list pagination', 'asae-content-ingestor' ); ?>">
+		</div>
+
+		<!-- Apply & progress row -->
 		<div id="asae-ci-review-apply-row" class="asae-ci-hidden" style="margin-top:1em;">
 			<button type="button" id="asae-ci-apply-categories-btn" class="button button-primary">
 				<?php esc_html_e( 'Apply Categories &amp; Publish', 'asae-content-ingestor' ); ?>
 			</button>
+			<span id="asae-ci-apply-progress"></span>
 			<span id="asae-ci-review-error" class="asae-ci-error-msg" role="alert" aria-live="assertive"></span>
 		</div>
 	</section>

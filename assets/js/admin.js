@@ -483,63 +483,130 @@
 		}
 	} );
 
-	// ── Category Review ───────────────────────────────────────────────────────
+	// ── Category Review (paginated, server-side) ────────────────────────────
+
+	var reviewCurrentPage  = 1;
+	var reviewPerPage      = 100;
+	var reviewSearchTerm   = '';
+	var reviewAssignments  = {};   // { postId: termId } – persists across pages.
+	var reviewTotal        = 0;    // Total pending items (from server).
+	var reviewCategories   = [];   // Cached category list.
+	var reviewSearchTimer  = null; // Debounce timer for search input.
+
+	var $reviewToolbar    = $( '#asae-ci-review-toolbar' );
+	var $reviewBulkRow    = $( '#asae-ci-review-bulk-row' );
+	var $reviewPagination = $( '#asae-ci-review-pagination' );
+	var $reviewProgress   = $( '#asae-ci-review-progress' );
+	var $applyProgress    = $( '#asae-ci-apply-progress' );
+	var $applyAllBtn      = $( '#asae-ci-apply-all-btn' );
+	var $bulkCatSelect    = $( '#asae-ci-review-bulk-cat' );
 
 	/**
 	 * Called when the server reports the job is in 'needs_review' status.
-	 * Stores review data and renders the review panel.
+	 * Fetches the first page of review items from a dedicated endpoint.
 	 *
-	 * @param {Object} data Progress data containing pending_review and review_categories.
+	 * @param {Object} data Progress data (contains pending_review_total).
 	 */
 	function onNeedsReview( data ) {
 		pendingReviewData = data;
-		renderCategoryReview( data.pending_review || [], data.review_categories || [] );
+		reviewTotal = data.pending_review_total || 0;
+		reviewCurrentPage = 1;
+		reviewSearchTerm = '';
+		$( '#asae-ci-review-search' ).val( '' );
+
+		fetchReviewPage();
 	}
 
 	/**
-	 * Renders the category review table: one row per pending draft post, each
-	 * with a <select> for the admin to choose a category.
-	 *
-	 * @param {Array} items      Pending review items [{post_id, post_title, source_url}].
-	 * @param {Array} categories Available category terms [{term_id, name}].
+	 * Fetches a single page of pending review items from the server.
 	 */
-	function renderCategoryReview( items, categories ) {
-		if ( ! items || ! items.length ) {
+	function fetchReviewPage() {
+		$.ajax( {
+			url    : asaeCi.ajaxUrl,
+			method : 'POST',
+			data   : {
+				action   : 'asae_ci_fetch_review_page',
+				nonce    : asaeCi.nonce,
+				job_key  : currentJobKey,
+				page     : reviewCurrentPage,
+				per_page : reviewPerPage,
+				search   : reviewSearchTerm,
+			},
+		} )
+		.done( function ( response ) {
+			if ( ! response.success ) {
+				$reviewError.text( response.data && response.data.message ? response.data.message : 'Failed to load review items.' );
+				return;
+			}
+
+			var d = response.data;
+			reviewTotal      = d.total;
+			reviewCategories = d.categories || [];
+			reviewCurrentPage = d.page;
+
+			renderCategoryReview( d.items, d.categories, d.total, d.page, d.pages );
+		} )
+		.fail( function () {
+			$reviewError.text( 'Network error loading review items.' );
+		} );
+	}
+
+	/**
+	 * Renders the category review table for the current page of items.
+	 *
+	 * @param {Array}  items      Page of review items.
+	 * @param {Array}  categories Available categories.
+	 * @param {number} total      Total pending items (filtered).
+	 * @param {number} page       Current page number.
+	 * @param {number} pages      Total pages.
+	 */
+	function renderCategoryReview( items, categories, total, page, pages ) {
+		if ( ! total ) {
 			$reviewPanel.addClass( 'asae-ci-hidden' );
 			return;
 		}
 
-		// Build the "Apply to All" selector.
-		var categoryOptions = '<option value="">— Select a category —</option>';
+		// Build category <option> HTML.
+		var categoryOptions = '<option value="">\u2014 Select \u2014</option>';
 		categories.forEach( function ( cat ) {
 			categoryOptions += '<option value="' + escAttr( String( cat.term_id ) ) + '">' +
 				escHtml( cat.name ) + '</option>';
 		} );
 
-		var applyAllId = 'asae-ci-apply-all-cat';
-		var applyAllHtml =
-			'<div style="margin-bottom:0.75em;">' +
-				'<label for="' + applyAllId + '"><strong>Apply to all:</strong></label> ' +
-				'<select id="' + applyAllId + '">' + categoryOptions + '</select>' +
-			'</div>';
+		// Update progress counter.
+		var assigned = Object.keys( reviewAssignments ).length;
+		$reviewProgress.text( assigned + ' of ' + total + ' categorized' );
 
-		// Build the table rows.
+		// Populate bulk category dropdown.
+		$bulkCatSelect.html( categoryOptions );
+
+		// Build table rows.
 		var rows = items.map( function ( item, idx ) {
 			var selectId = 'asae-ci-cat-' + idx;
+			var postId   = String( item.post_id );
+			var saved    = reviewAssignments[ postId ] || '';
+
+			// Build select with saved value pre-selected.
+			var opts = '<option value="">\u2014 Select \u2014</option>';
+			categories.forEach( function ( cat ) {
+				var sel = ( String( cat.term_id ) === saved ) ? ' selected' : '';
+				opts += '<option value="' + escAttr( String( cat.term_id ) ) + '"' + sel + '>' +
+					escHtml( cat.name ) + '</option>';
+			} );
+
 			return '<tr>' +
 				'<td class="asae-ci-url-cell"><a href="' + escAttr( item.source_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( item.source_url ) + '</a></td>' +
 				'<td>' + escHtml( item.post_title || '(untitled)' ) + '</td>' +
 				'<td>' +
 					'<label for="' + selectId + '" class="screen-reader-text">' + escHtml( 'Category for ' + ( item.post_title || item.source_url ) ) + '</label>' +
-					'<select id="' + selectId + '" data-post-id="' + escAttr( String( item.post_id ) ) + '" class="asae-ci-cat-select">' +
-						categoryOptions +
+					'<select id="' + selectId + '" data-post-id="' + escAttr( postId ) + '" class="asae-ci-cat-select">' +
+						opts +
 					'</select>' +
 				'</td>' +
 				'</tr>';
 		} );
 
 		var tableHtml =
-			applyAllHtml +
 			'<table class="wp-list-table widefat striped">' +
 				'<caption class="screen-reader-text">Items requiring category assignment</caption>' +
 				'<thead><tr>' +
@@ -551,75 +618,260 @@
 			'</table>';
 
 		$reviewTableWrap.html( tableHtml );
+
+		// Render pagination.
+		if ( pages > 1 ) {
+			var pagBtns = '';
+			// Show prev button.
+			if ( page > 1 ) {
+				pagBtns += '<button type="button" class="button asae-ci-review-page-btn" data-page="' + ( page - 1 ) + '">&laquo; Prev</button>';
+			}
+			// Show page number buttons (max 7 around current page).
+			var startP = Math.max( 1, page - 3 );
+			var endP   = Math.min( pages, page + 3 );
+			for ( var p = startP; p <= endP; p++ ) {
+				var active = ( p === page ) ? ' button-primary' : '';
+				var aria   = ( p === page ) ? ' aria-current="page"' : '';
+				pagBtns += '<button type="button" class="button asae-ci-review-page-btn' + active + '" data-page="' + p + '"' + aria + '>' + p + '</button>';
+			}
+			// Show next button.
+			if ( page < pages ) {
+				pagBtns += '<button type="button" class="button asae-ci-review-page-btn" data-page="' + ( page + 1 ) + '">Next &raquo;</button>';
+			}
+			$reviewPagination.html( pagBtns ).removeClass( 'asae-ci-hidden' );
+		} else {
+			$reviewPagination.addClass( 'asae-ci-hidden' );
+		}
+
+		// Enable the "Apply to ALL" button once a bulk category is chosen.
+		$applyAllBtn.prop( 'disabled', ! $bulkCatSelect.val() );
+		$applyAllBtn.text( 'Apply to ALL ' + total + ' items' );
+
+		// Show all UI sections.
+		$reviewToolbar.removeClass( 'asae-ci-hidden' );
+		$reviewBulkRow.removeClass( 'asae-ci-hidden' );
 		$reviewApplyRow.removeClass( 'asae-ci-hidden' );
 		$reviewError.text( '' );
+		$applyProgress.text( '' );
 		$reviewPanel.removeClass( 'asae-ci-hidden' );
 
-		// "Apply to all" propagates the selected category to every row select.
-		$( '#' + applyAllId ).on( 'change', function () {
-			var val = $( this ).val();
-			$( '.asae-ci-cat-select' ).val( val );
-		} );
-
-		// Scroll to review panel.
-		$( 'html, body' ).animate( { scrollTop: $reviewPanel.offset().top - 40 }, 400 );
+		// Scroll on first load only.
+		if ( page === 1 && ! reviewSearchTerm ) {
+			$( 'html, body' ).animate( { scrollTop: $reviewPanel.offset().top - 40 }, 400 );
+		}
 	}
 
 	/**
-	 * Handles the "Apply Categories & Publish" button click.
-	 * Collects the admin's selections and sends them to the server.
+	 * Saves the current page's dropdown selections into reviewAssignments.
 	 */
-	$applyBtn.on( 'click', function () {
-		var assignments = [];
-		var allSelected = true;
-
+	function saveCurrentPageSelections() {
 		$( '.asae-ci-cat-select' ).each( function () {
-			var termId  = $.trim( $( this ).val() );
-			var postId  = $( this ).data( 'post-id' );
-			if ( ! termId ) {
-				allSelected = false;
+			var val    = $.trim( $( this ).val() );
+			var postId = String( $( this ).data( 'post-id' ) );
+			if ( val ) {
+				reviewAssignments[ postId ] = val;
 			} else {
-				assignments.push( { post_id: postId, term_id: termId } );
+				delete reviewAssignments[ postId ];
 			}
 		} );
+	}
 
-		if ( ! allSelected ) {
-			$reviewError.text( 'Please select a category for every item before applying.' );
+	/**
+	 * Updates the progress counter text.
+	 */
+	function updateReviewProgress() {
+		var assigned = Object.keys( reviewAssignments ).length;
+		$reviewProgress.text( assigned + ' of ' + reviewTotal + ' categorized' );
+	}
+
+	// ── Review Event Handlers ────────────────────────────────────────────────
+
+	// Pagination clicks.
+	$( document ).on( 'click', '.asae-ci-review-page-btn', function () {
+		saveCurrentPageSelections();
+		reviewCurrentPage = parseInt( $( this ).data( 'page' ), 10 ) || 1;
+		fetchReviewPage();
+		$( 'html, body' ).animate( { scrollTop: $reviewTableWrap.offset().top - 40 }, 200 );
+	} );
+
+	// Search input (debounced 300ms).
+	$( document ).on( 'input', '#asae-ci-review-search', function () {
+		var val = $.trim( $( this ).val() );
+		clearTimeout( reviewSearchTimer );
+		reviewSearchTimer = setTimeout( function () {
+			saveCurrentPageSelections();
+			reviewSearchTerm  = val;
+			reviewCurrentPage = 1;
+			fetchReviewPage();
+		}, 300 );
+	} );
+
+	// Individual select change – immediately save to reviewAssignments.
+	$( document ).on( 'change', '.asae-ci-cat-select', function () {
+		var val    = $.trim( $( this ).val() );
+		var postId = String( $( this ).data( 'post-id' ) );
+		if ( val ) {
+			reviewAssignments[ postId ] = val;
+		} else {
+			delete reviewAssignments[ postId ];
+		}
+		updateReviewProgress();
+	} );
+
+	// Bulk "Apply to all visible" – sets current page dropdowns.
+	$bulkCatSelect.on( 'change', function () {
+		var val = $( this ).val();
+		$applyAllBtn.prop( 'disabled', ! val );
+		if ( val ) {
+			$( '.asae-ci-cat-select' ).val( val ).trigger( 'change' );
+		}
+	} );
+
+	// "Apply to ALL N items" button – server-side bulk apply.
+	$applyAllBtn.on( 'click', function () {
+		var termId = $bulkCatSelect.val();
+		if ( ! termId ) {
+			$reviewError.text( 'Please select a category first.' );
 			return;
 		}
-		$reviewError.text( '' );
 
-		$applyBtn.prop( 'disabled', true ).text( 'Applying…' );
+		if ( ! window.confirm( 'Apply this category to ALL ' + reviewTotal + ' pending items and publish them?' ) ) {
+			return;
+		}
+
+		$applyAllBtn.prop( 'disabled', true ).text( 'Applying\u2026' );
+		$applyBtn.prop( 'disabled', true );
+		$reviewError.text( '' );
 
 		$.ajax( {
 			url    : asaeCi.ajaxUrl,
 			method : 'POST',
 			data   : {
-				action      : 'asae_ci_apply_categories',
-				nonce       : asaeCi.nonce,
-				job_key     : currentJobKey,
-				assignments : JSON.stringify( assignments ),
+				action  : 'asae_ci_apply_category_to_all',
+				nonce   : asaeCi.nonce,
+				job_key : currentJobKey,
+				term_id : termId,
 			},
 		} )
 		.done( function ( response ) {
-			$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+			$applyAllBtn.prop( 'disabled', false );
+			$applyBtn.prop( 'disabled', false );
 			if ( ! response.success ) {
+				$applyAllBtn.text( 'Apply to ALL ' + reviewTotal + ' items' );
 				$reviewError.text( response.data && response.data.message ? response.data.message : 'An error occurred.' );
 				return;
 			}
-			var data = response.data;
-			if ( data.is_needs_review ) {
-				// Some items still unresolved (shouldn't happen if all selected, but handle gracefully).
-				onNeedsReview( data );
-			} else if ( data.is_complete ) {
+
+			var d = response.data;
+			if ( 'completed' === d.status ) {
+				reviewAssignments = {};
 				$reviewPanel.addClass( 'asae-ci-hidden' );
-				onJobComplete( data );
+				$applyProgress.text( 'Applied category to ' + d.applied + ' items.' );
+				// Refresh job state to show completion.
+				$.ajax( {
+					url    : asaeCi.ajaxUrl,
+					method : 'POST',
+					data   : {
+						action  : 'asae_ci_get_progress',
+						nonce   : asaeCi.nonce,
+						job_key : currentJobKey,
+					},
+				} ).done( function ( resp ) {
+					if ( resp.success ) {
+						onJobComplete( resp.data );
+					}
+				} );
 			}
 		} )
 		.fail( function () {
-			$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+			$applyAllBtn.prop( 'disabled', false ).text( 'Apply to ALL ' + reviewTotal + ' items' );
+			$applyBtn.prop( 'disabled', false );
 			$reviewError.text( 'Network error. Please try again.' );
 		} );
+	} );
+
+	// "Apply Categories & Publish" – batched per-item assignments.
+	$applyBtn.on( 'click', function () {
+		saveCurrentPageSelections();
+
+		// Build assignments array from all saved selections.
+		var assignments = [];
+		var keys = Object.keys( reviewAssignments );
+		for ( var i = 0; i < keys.length; i++ ) {
+			assignments.push( { post_id: parseInt( keys[ i ], 10 ), term_id: parseInt( reviewAssignments[ keys[ i ] ], 10 ) } );
+		}
+
+		if ( ! assignments.length ) {
+			$reviewError.text( 'No categories selected. Please select at least one category before applying.' );
+			return;
+		}
+		$reviewError.text( '' );
+
+		// Split into chunks of 50.
+		var chunkSize = 50;
+		var chunks    = [];
+		for ( var c = 0; c < assignments.length; c += chunkSize ) {
+			chunks.push( assignments.slice( c, c + chunkSize ) );
+		}
+
+		$applyBtn.prop( 'disabled', true );
+		$applyAllBtn.prop( 'disabled', true );
+
+		function sendChunk( idx ) {
+			if ( idx >= chunks.length ) {
+				// All chunks sent. Clear applied assignments and refresh.
+				reviewAssignments = {};
+				$applyProgress.text( '' );
+				$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+				$applyAllBtn.prop( 'disabled', false );
+				reviewCurrentPage = 1;
+				fetchReviewPage();
+				return;
+			}
+
+			$applyProgress.text( 'Applying batch ' + ( idx + 1 ) + ' of ' + chunks.length + '\u2026' );
+
+			$.ajax( {
+				url    : asaeCi.ajaxUrl,
+				method : 'POST',
+				data   : {
+					action      : 'asae_ci_apply_categories',
+					nonce       : asaeCi.nonce,
+					job_key     : currentJobKey,
+					assignments : JSON.stringify( chunks[ idx ] ),
+				},
+			} )
+			.done( function ( response ) {
+				if ( ! response.success ) {
+					$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+					$applyAllBtn.prop( 'disabled', false );
+					$applyProgress.text( '' );
+					$reviewError.text( response.data && response.data.message ? response.data.message : 'Error applying batch ' + ( idx + 1 ) + '.' );
+					return;
+				}
+
+				var data = response.data;
+				if ( data.is_complete ) {
+					reviewAssignments = {};
+					$applyProgress.text( '' );
+					$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+					$reviewPanel.addClass( 'asae-ci-hidden' );
+					onJobComplete( data );
+					return;
+				}
+
+				// Continue with next chunk.
+				sendChunk( idx + 1 );
+			} )
+			.fail( function () {
+				$applyBtn.prop( 'disabled', false ).text( 'Apply Categories & Publish' );
+				$applyAllBtn.prop( 'disabled', false );
+				$applyProgress.text( '' );
+				$reviewError.text( 'Network error on batch ' + ( idx + 1 ) + '. Please try again.' );
+			} );
+		}
+
+		sendChunk( 0 );
 	} );
 
 	// ── Co-Authors Plus Notice Dismiss ────────────────────────────────────────

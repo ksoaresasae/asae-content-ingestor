@@ -54,7 +54,9 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_get_progress',       [ __CLASS__, 'ajax_get_progress' ] );
 		add_action( 'wp_ajax_asae_ci_delete_report',      [ __CLASS__, 'ajax_delete_report' ] );
 		add_action( 'wp_ajax_asae_ci_dismiss_cap_notice', [ __CLASS__, 'ajax_dismiss_cap_notice' ] );
-		add_action( 'wp_ajax_asae_ci_apply_categories',   [ __CLASS__, 'ajax_apply_categories' ] );
+		add_action( 'wp_ajax_asae_ci_apply_categories',      [ __CLASS__, 'ajax_apply_categories' ] );
+		add_action( 'wp_ajax_asae_ci_fetch_review_page',     [ __CLASS__, 'ajax_fetch_review_page' ] );
+		add_action( 'wp_ajax_asae_ci_apply_category_to_all', [ __CLASS__, 'ajax_apply_category_to_all' ] );
 
 		// YouTube Feed tab.
 		add_action( 'wp_ajax_asae_ci_save_youtube_key',        [ __CLASS__, 'ajax_save_youtube_key' ] );
@@ -458,6 +460,159 @@ class ASAE_CI_Admin {
 			: [ 'is_complete' => true ];
 
 		wp_send_json_success( $result );
+	}
+
+	// ── Paginated Category Review ────────────────────────────────────────────
+
+	/**
+	 * Returns a single page of pending review items for the category review UI.
+	 *
+	 * Accepts: job_key, page (default 1), per_page (default 100), search (optional).
+	 * Returns: { items: [...], total: N, page: N, pages: N, categories: [...] }
+	 *
+	 * @return void
+	 */
+	public static function ajax_fetch_review_page(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$job_key  = sanitize_text_field( wp_unslash( $_POST['job_key']  ?? '' ) );
+		$page     = max( 1, (int) ( $_POST['page']     ?? 1 ) );
+		$per_page = max( 1, min( 200, (int) ( $_POST['per_page'] ?? 100 ) ) );
+		$search   = sanitize_text_field( wp_unslash( $_POST['search']   ?? '' ) );
+
+		if ( empty( $job_key ) ) {
+			wp_send_json_error( [ 'message' => __( 'Invalid request.', 'asae-content-ingestor' ) ] );
+		}
+
+		$job = ASAE_CI_Scheduler::get_job( $job_key );
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
+		}
+
+		$queue_data     = json_decode( $job['queue_data'], true );
+		$pending_review = $queue_data['pending_review'] ?? [];
+
+		// Filter by search term (case-insensitive substring on post_title).
+		if ( '' !== $search ) {
+			$search_lower   = mb_strtolower( $search );
+			$pending_review = array_values( array_filter(
+				$pending_review,
+				static function ( $item ) use ( $search_lower ) {
+					return false !== mb_strpos( mb_strtolower( $item['post_title'] ?? '' ), $search_lower );
+				}
+			) );
+		}
+
+		$total = count( $pending_review );
+		$pages = max( 1, (int) ceil( $total / $per_page ) );
+		$page  = min( $page, $pages );
+
+		$items = array_slice( $pending_review, ( $page - 1 ) * $per_page, $per_page );
+
+		// Build category list.
+		$post_type = $job['post_type'] ?? 'post';
+		$tax       = 'post' === $post_type ? 'category' : '';
+		if ( ! $tax ) {
+			$taxons = get_object_taxonomies( $post_type, 'objects' );
+			foreach ( $taxons as $t ) {
+				if ( $t->hierarchical ) {
+					$tax = $t->name;
+					break;
+				}
+			}
+		}
+		$categories = [];
+		if ( $tax ) {
+			$terms = get_terms( [ 'taxonomy' => $tax, 'hide_empty' => false ] );
+			if ( ! is_wp_error( $terms ) ) {
+				foreach ( $terms as $term ) {
+					$categories[] = [ 'term_id' => $term->term_id, 'name' => $term->name ];
+				}
+			}
+		}
+
+		wp_send_json_success( [
+			'items'      => $items,
+			'total'      => $total,
+			'page'       => $page,
+			'pages'      => $pages,
+			'categories' => $categories,
+		] );
+	}
+
+	/**
+	 * Applies a single category to ALL pending review items (server-side batch).
+	 *
+	 * Used for the "Apply to ALL N items" bulk action. Processes items in
+	 * internal batches of 50 to manage memory.
+	 *
+	 * @return void
+	 */
+	public static function ajax_apply_category_to_all(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$job_key = sanitize_text_field( wp_unslash( $_POST['job_key'] ?? '' ) );
+		$term_id = (int) ( $_POST['term_id'] ?? 0 );
+
+		if ( empty( $job_key ) || $term_id <= 0 ) {
+			wp_send_json_error( [ 'message' => __( 'Invalid request.', 'asae-content-ingestor' ) ] );
+		}
+
+		$job = ASAE_CI_Scheduler::get_job( $job_key );
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
+		}
+
+		$queue_data     = json_decode( $job['queue_data'], true );
+		$pending_review = $queue_data['pending_review'] ?? [];
+		$post_type      = $job['post_type'] ?? 'post';
+
+		// Determine taxonomy.
+		$tax = 'post' === $post_type ? 'category' : '';
+		if ( ! $tax ) {
+			$taxons = get_object_taxonomies( $post_type, 'objects' );
+			foreach ( $taxons as $t ) {
+				if ( $t->hierarchical ) {
+					$tax = $t->name;
+					break;
+				}
+			}
+		}
+
+		if ( ! $tax ) {
+			wp_send_json_error( [ 'message' => __( 'No category taxonomy found.', 'asae-content-ingestor' ) ] );
+		}
+
+		// Process all pending items.
+		$applied = 0;
+		foreach ( $pending_review as $item ) {
+			$post_id = (int) ( $item['post_id'] ?? 0 );
+			if ( $post_id <= 0 ) {
+				continue;
+			}
+
+			wp_set_object_terms( $post_id, [ $term_id ], $tax, false );
+			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
+			delete_post_meta( $post_id, '_asae_ci_needs_category' );
+			$applied++;
+		}
+
+		// Clear pending_review and mark job completed.
+		$queue_data['pending_review'] = [];
+		ASAE_CI_Scheduler::update_job( $job_key, [
+			'status'     => 'completed',
+			'queue_data' => wp_json_encode( $queue_data ),
+		] );
+		if ( $job['report_id'] ) {
+			ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'completed' ] );
+		}
+
+		wp_send_json_success( [
+			'applied' => $applied,
+			'status'  => 'completed',
+		] );
 	}
 
 	// ── Private Helpers ───────────────────────────────────────────────────────

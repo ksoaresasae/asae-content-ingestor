@@ -244,8 +244,11 @@ class ASAE_CI_Scheduler {
 		$disc['content_urls'] = $urls;
 		$queue_data['discovery'] = $disc;
 
-		// Move discovered URLs into the ingestion queue.
+		// Move discovered URLs into the ingestion queue and clear the
+		// discovery copy to avoid storing 17K+ URLs twice in the JSON blob.
 		$content_urls = $urls;
+		$disc['content_urls'] = [];
+		$queue_data['discovery'] = $disc;
 
 		if ( 'active' === $job['run_type'] ) {
 			$queue_data['ingestion']['queue']     = $content_urls;
@@ -382,7 +385,7 @@ class ASAE_CI_Scheduler {
 
 		if ( empty( $queue ) ) {
 			// All URLs processed – finalise (may enter needs_review if drafts exist).
-			self::finalise_job( $job, $done, $failed, $pending_review );
+			self::finalise_job( $job, $queue_data, $done, $failed, $pending_review );
 		} else {
 			self::update_job( $job['job_key'], [
 				'queue_data' => wp_json_encode( $queue_data ),
@@ -542,9 +545,19 @@ class ASAE_CI_Scheduler {
 	 * @param array $pending_review Items that were saved as drafts needing category review.
 	 * @return void
 	 */
-	private static function finalise_job( array $job, int $done, int $failed, array $pending_review = [] ): void {
+	private static function finalise_job( array $job, array $queue_data, int $done, int $failed, array $pending_review = [] ): void {
 		$final_status = empty( $pending_review ) ? 'completed' : 'needs_review';
-		self::update_job( $job['job_key'], [ 'status' => $final_status ] );
+
+		// Prune stale data from queue_data to reduce blob size.
+		// feed_metadata and ingestion queue are no longer needed after ingestion.
+		unset( $queue_data['feed_metadata'] );
+		$queue_data['ingestion']['queue'] = [];
+		$queue_data['discovery']['content_urls'] = [];
+
+		self::update_job( $job['job_key'], [
+			'status'    => $final_status,
+			'queue_data' => wp_json_encode( $queue_data ),
+		] );
 
 		if ( $job['report_id'] ) {
 			ASAE_CI_Reports::update_report( (int) $job['report_id'], [
@@ -642,22 +655,22 @@ class ASAE_CI_Scheduler {
 		}
 
 		return [
-			'job_key'           => $job['job_key'],
-			'status'            => $job['status'],
-			'phase'             => $job['phase'],
-			'run_type'          => $job['run_type'],
-			'report_id'         => $job['report_id'],
-			'crawled'           => $feed_fetched ? 1 : 0,
-			'to_crawl'          => $feed_fetched ? 0 : 1,
-			'content_found'     => $content_found,
-			'queue_remaining'   => $queue_count,
-			'processed'         => $processed,
-			'failed'            => $failed,
-			'dry_results'       => 'dry' === $job['run_type'] ? $dry_res : [],
-			'pending_review'    => $pending_review,
-			'review_categories' => $review_categories,
-			'is_needs_review'   => 'needs_review' === $job['status'],
-			'is_complete'       => 'completed' === $job['status'] || 'failed' === $job['status'],
+			'job_key'              => $job['job_key'],
+			'status'               => $job['status'],
+			'phase'                => $job['phase'],
+			'run_type'             => $job['run_type'],
+			'report_id'            => $job['report_id'],
+			'crawled'              => $feed_fetched ? 1 : 0,
+			'to_crawl'             => $feed_fetched ? 0 : 1,
+			'content_found'        => $content_found,
+			'queue_remaining'      => $queue_count,
+			'processed'            => $processed,
+			'failed'               => $failed,
+			'dry_results'          => 'dry' === $job['run_type'] ? $dry_res : [],
+			'pending_review_total' => count( $pending_review ),
+			'review_categories'    => $review_categories,
+			'is_needs_review'      => 'needs_review' === $job['status'],
+			'is_complete'          => 'completed' === $job['status'] || 'failed' === $job['status'],
 		];
 	}
 
