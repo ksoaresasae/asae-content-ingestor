@@ -327,8 +327,9 @@
 			var authorText  = item.author || '—';
 			// Show only the date portion (YYYY-MM-DD) when a full datetime is present.
 			var dateText    = item.date ? item.date.replace( /\s.*$/, '' ) : '—';
-			var catText     = item.category_match ? item.category_match : '— (needs review)';
-			var catClass    = item.category_match ? '' : 'asae-ci-status-warning';
+			var catMatch    = item.category_match;
+			var catText     = catMatch ? ( catMatch.name || catMatch ) : '— (needs review)';
+			var catClass    = catMatch ? '' : 'asae-ci-status-warning';
 
 			return '<tr>' +
 				'<td class="asae-ci-url-cell"><a href="' + escAttr( item.source_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( item.source_url ) + '</a></td>' +
@@ -378,7 +379,8 @@
 
 		var tagsText   = Array.isArray( item.tags ) ? item.tags.join( ', ' ) : ( item.tags || '—' );
 		var dateText   = item.date ? item.date.replace( /\s.*$/, '' ) : '—';
-		var catText    = item.category_match || '— (needs review)';
+		var catMatch   = item.category_match;
+		var catText    = catMatch ? ( catMatch.name || catMatch ) : '— (needs review)';
 		var excerptTxt = item.excerpt || '—';
 		var featText   = item.has_featured ? 'Yes' : 'No';
 
