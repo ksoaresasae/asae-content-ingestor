@@ -57,6 +57,7 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_apply_categories',      [ __CLASS__, 'ajax_apply_categories' ] );
 		add_action( 'wp_ajax_asae_ci_fetch_review_page',     [ __CLASS__, 'ajax_fetch_review_page' ] );
 		add_action( 'wp_ajax_asae_ci_apply_category_to_all', [ __CLASS__, 'ajax_apply_category_to_all' ] );
+		add_action( 'wp_ajax_asae_ci_clear_redirects',       [ __CLASS__, 'ajax_clear_redirects' ] );
 
 		// YouTube Feed tab.
 		add_action( 'wp_ajax_asae_ci_save_youtube_key',        [ __CLASS__, 'ajax_save_youtube_key' ] );
@@ -236,7 +237,7 @@ class ASAE_CI_Admin {
 		}
 
 		// Validate batch_limit value.
-		if ( ! in_array( $batch_limit, [ '10', '50', '100', 'all' ], true ) ) {
+		if ( ! in_array( $batch_limit, [ '10', '50', '100', '1000', 'all' ], true ) ) {
 			$batch_limit = '50';
 		}
 
@@ -612,6 +613,48 @@ class ASAE_CI_Admin {
 		wp_send_json_success( [
 			'applied' => $applied,
 			'status'  => 'completed',
+		] );
+	}
+
+	// ── Redirect Data Management ─────────────────────────────────────────────
+
+	/**
+	 * Clears all stored ASAEcenter.org redirect/source URL post meta.
+	 *
+	 * Removes _asae_ci_source_url meta entries that contain 'asaecenter.org',
+	 * allowing the redirect JSON export to start fresh.
+	 *
+	 * @return void
+	 */
+	public static function ajax_clear_redirects(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		global $wpdb;
+
+		// Count matching rows first for the response.
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$count = (int) $wpdb->get_var(
+			"SELECT COUNT(*) FROM {$wpdb->postmeta}
+			 WHERE meta_key = '_asae_ci_source_url'
+			   AND meta_value LIKE '%asaecenter.org%'"
+		);
+
+		// Delete all asaecenter.org source URL meta entries.
+		$wpdb->query(
+			"DELETE FROM {$wpdb->postmeta}
+			 WHERE meta_key = '_asae_ci_source_url'
+			   AND meta_value LIKE '%asaecenter.org%'"
+		);
+		// phpcs:enable
+
+		wp_send_json_success( [
+			'cleared' => $count,
+			'message' => sprintf(
+				/* translators: %d: number of redirect entries cleared */
+				__( 'Cleared %d ASAEcenter.org redirect entries.', 'asae-content-ingestor' ),
+				$count
+			),
 		] );
 	}
 

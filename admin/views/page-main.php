@@ -158,10 +158,11 @@ if ( ! current_user_can( 'manage_options' ) ) {
 				<div class="asae-ci-radio-group" role="group" aria-labelledby="asae-ci-limit-legend">
 					<?php
 					$limits = [
-						'10'  => __( '10 items', 'asae-content-ingestor' ),
-						'50'  => __( '50 items', 'asae-content-ingestor' ),
-						'100' => __( '100 items', 'asae-content-ingestor' ),
-						'all' => __( 'All available', 'asae-content-ingestor' ),
+						'10'   => __( '10 items', 'asae-content-ingestor' ),
+						'50'   => __( '50 items', 'asae-content-ingestor' ),
+						'100'  => __( '100 items', 'asae-content-ingestor' ),
+						'1000' => __( '1,000 items', 'asae-content-ingestor' ),
+						'all'  => __( 'All available', 'asae-content-ingestor' ),
 					];
 					foreach ( $limits as $val => $label ) :
 						$checked = ( '50' === $val ) ? ' checked' : '';

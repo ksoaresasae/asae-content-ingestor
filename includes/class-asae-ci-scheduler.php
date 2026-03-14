@@ -34,7 +34,7 @@ class ASAE_CI_Scheduler {
 	 *   @type string $url_restriction  Optional URL prefix to filter feed links.
 	 *   @type string $post_type        WP post type for ingested content.
 	 *   @type string $run_type         'dry' or 'active'.
-	 *   @type string $batch_limit      '10', '50', '100', or 'all'.
+	 *   @type string $batch_limit      '10', '50', '100', '1000', or 'all'.
 	 * }
 	 * @return string|WP_Error Unique job key on success, WP_Error on failure.
 	 */
@@ -46,7 +46,7 @@ class ASAE_CI_Scheduler {
 		$post_type       = sanitize_key( $args['post_type']       ?? 'post' );
 		$run_type        = in_array( $args['run_type'] ?? 'dry', [ 'dry', 'active' ], true )
 		                   ? $args['run_type'] : 'dry';
-		$batch_limit     = in_array( $args['batch_limit'] ?? '50', [ '10', '50', '100', 'all' ], true )
+		$batch_limit     = in_array( $args['batch_limit'] ?? '50', [ '10', '50', '100', '1000', 'all' ], true )
 		                   ? $args['batch_limit'] : '50';
 
 		if ( empty( $source_url ) ) {
@@ -246,9 +246,11 @@ class ASAE_CI_Scheduler {
 
 		// Move discovered URLs into the ingestion queue and clear the
 		// discovery copy to avoid storing 17K+ URLs twice in the JSON blob.
+		// Preserve the count so build_progress_response() can report it.
 		$content_urls = $urls;
-		$disc['content_urls'] = [];
-		$queue_data['discovery'] = $disc;
+		$disc['content_urls']       = [];
+		$disc['content_urls_count'] = count( $urls );
+		$queue_data['discovery']    = $disc;
 
 		if ( 'active' === $job['run_type'] ) {
 			$queue_data['ingestion']['queue']     = $content_urls;
@@ -623,7 +625,7 @@ class ASAE_CI_Scheduler {
 		// Map RSS feed_fetched (bool) to crawled/to_crawl counts for the UI.
 		// The discovery bar advances from 0 → 100% once the feed is read.
 		$feed_fetched  = (bool) ( $disc['feed_fetched'] ?? false );
-		$content_found = count( $disc['content_urls'] ?? [] );
+		$content_found = (int) ( $disc['content_urls_count'] ?? count( $disc['content_urls'] ?? [] ) );
 		$queue_count   = count( $ingest['queue']      ?? [] );
 		$processed     = (int) ( $ingest['processed'] ?? 0 );
 		$failed        = (int) ( $ingest['failed']    ?? 0 );

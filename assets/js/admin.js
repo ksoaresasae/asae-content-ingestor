@@ -886,6 +886,41 @@
 		$( '#asae-ci-cap-notice' ).slideUp( 300 );
 	} );
 
+	// ── Clear ASAEcenter.org Redirect Data ───────────────────────────────────
+
+	$( document ).on( 'click', '#asae-ci-clear-redirects-btn', function () {
+		if ( ! window.confirm( 'Clear ALL stored ASAEcenter.org redirect/source URL data? This cannot be undone. Make sure you have exported the JSON first if needed.' ) ) {
+			return;
+		}
+
+		var $btn = $( this );
+		var $msg = $( '#asae-ci-clear-redirects-msg' );
+
+		$btn.prop( 'disabled', true ).text( 'Clearing\u2026' );
+		$msg.text( '' );
+
+		$.ajax( {
+			url    : asaeCi.ajaxUrl,
+			method : 'POST',
+			data   : {
+				action : 'asae_ci_clear_redirects',
+				nonce  : asaeCi.nonce,
+			},
+		} )
+		.done( function ( response ) {
+			$btn.prop( 'disabled', false ).text( 'Clear ASAEcenter.org Redirect Data' );
+			if ( response.success ) {
+				$msg.text( response.data.message );
+			} else {
+				$msg.text( response.data && response.data.message ? response.data.message : 'An error occurred.' );
+			}
+		} )
+		.fail( function () {
+			$btn.prop( 'disabled', false ).text( 'Clear ASAEcenter.org Redirect Data' );
+			$msg.text( 'Network error. Please try again.' );
+		} );
+	} );
+
 	// ── Report Delete (Reports Listing Page) ──────────────────────────────────
 
 	$( document ).on( 'click', '.asae-ci-delete-report', function () {

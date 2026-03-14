@@ -63,9 +63,18 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 		>
 			<?php esc_html_e( 'Export ASAEcenter.org Redirects (JSON)', 'asae-content-ingestor' ); ?>
 		</a>
+		<button
+			type="button"
+			id="asae-ci-clear-redirects-btn"
+			class="button"
+			style="margin-left:.5rem; color:#b32d2e;"
+		>
+			<?php esc_html_e( 'Clear ASAEcenter.org Redirect Data', 'asae-content-ingestor' ); ?>
+		</button>
 		<p id="asae-ci-export-hint" class="description" style="margin-top:.35rem;">
 			<?php esc_html_e( 'Downloads a Redirection-plugin-compatible JSON file of all ingested asaecenter.org URLs for import on the ASAE Center WP site.', 'asae-content-ingestor' ); ?>
 		</p>
+		<p id="asae-ci-clear-redirects-msg" class="description" style="margin-top:.25rem;" aria-live="polite"></p>
 	</div>
 
 	<?php if ( empty( $reports ) ) : ?>
