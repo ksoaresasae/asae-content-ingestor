@@ -680,3 +680,65 @@ fieldset.asae-ci-field legend {
 	gap: .75rem;
 	flex-wrap: wrap;
 }
+
+/* ── WordPress REST API Tab ──────────────────────────────────────────────── */
+
+/* Content type checkboxes list */
+.asae-ci-wpr-type-item {
+	display: flex;
+	align-items: center;
+	gap: .5rem;
+	padding: .5rem .75rem;
+	border-bottom: 1px solid #f0f0f0;
+}
+
+.asae-ci-wpr-type-item:last-child {
+	border-bottom: none;
+}
+
+.asae-ci-wpr-type-item label {
+	display: flex;
+	align-items: center;
+	gap: .5rem;
+	flex: 1;
+	cursor: pointer;
+	font-weight: 400;
+}
+
+.asae-ci-wpr-type-item input[type="checkbox"] {
+	width: 18px;
+	height: 18px;
+	margin: 0;
+	cursor: pointer;
+	accent-color: #2271b1;
+}
+
+.asae-ci-wpr-type-count {
+	color: #646970;
+	font-size: .875rem;
+	white-space: nowrap;
+}
+
+.asae-ci-wpr-type-slug {
+	color: #646970;
+	font-size: .875rem;
+	font-family: monospace;
+}
+
+/* Credential status row */
+.asae-ci-wpr-creds-status {
+	display: flex;
+	align-items: center;
+	gap: .35rem;
+	margin: .5rem 0 1rem;
+	font-size: .875rem;
+	color: #3c434a;
+}
+
+/* Auth notice under content types */
+.asae-ci-wpr-auth-note {
+	margin: .75rem 0 0;
+	font-size: .8125rem;
+	font-style: italic;
+	color: #646970;
+}

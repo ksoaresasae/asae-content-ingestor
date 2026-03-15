@@ -50,6 +50,10 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		   aria-current="page">
 			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
 		</a>
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=wp-rest' ) ); ?>"
+		   class="nav-tab">
+			<?php esc_html_e( 'WordPress REST API', 'asae-content-ingestor' ); ?>
+		</a>
 	</nav>
 
 	<p class="asae-ci-intro">

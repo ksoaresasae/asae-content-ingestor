@@ -43,6 +43,10 @@ $pages     = $total > 0 ? (int) ceil( $total / $per_page ) : 1;
 		   class="nav-tab">
 			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
 		</a>
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=wp-rest' ) ); ?>"
+		   class="nav-tab">
+			<?php esc_html_e( 'WordPress REST API', 'asae-content-ingestor' ); ?>
+		</a>
 	</nav>
 
 	<?php

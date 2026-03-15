@@ -237,6 +237,22 @@ class ASAE_CI_Scheduler {
 		// This is used as fallback when the HTML parser cannot find metadata
 		// on the target page (e.g. YouTube video watch pages).
 		$feed_metadata = ASAE_CI_Crawler::fetch_feed_metadata( $feed_url, $url_restriction );
+
+		// Merge WP REST API author sidecar if it exists (enriches per-URL
+		// metadata with bio, photo, email, website from authenticated users endpoint).
+		if ( class_exists( 'ASAE_CI_WP_REST' ) ) {
+			$sidecar = ASAE_CI_WP_REST::load_author_sidecar();
+			if ( ! empty( $sidecar ) ) {
+				foreach ( $sidecar as $sidecar_url => $author_data ) {
+					if ( isset( $feed_metadata[ $sidecar_url ] ) ) {
+						$feed_metadata[ $sidecar_url ] = array_merge( $feed_metadata[ $sidecar_url ], $author_data );
+					} else {
+						$feed_metadata[ $sidecar_url ] = $author_data;
+					}
+				}
+			}
+		}
+
 		$queue_data['feed_metadata'] = $feed_metadata;
 
 		// Mark the feed as fetched and store the discovered URLs.
@@ -724,6 +740,21 @@ class ASAE_CI_Scheduler {
 				}
 			}
 			$parsed['tags'] = $existing;
+		}
+
+		// Author bio URL: use feed value as fallback (e.g. from WP REST sidecar).
+		if ( empty( $parsed['author_bio_url'] ) && ! empty( $fm['author_bio_url'] ) ) {
+			$parsed['author_bio_url'] = $fm['author_bio_url'];
+		}
+
+		// Author bio text: use feed value as fallback.
+		if ( empty( $parsed['author_bio'] ) && ! empty( $fm['author_bio'] ) ) {
+			$parsed['author_bio'] = $fm['author_bio'];
+		}
+
+		// Author photo URL: use feed value as fallback.
+		if ( empty( $parsed['author_photo_url'] ) && ! empty( $fm['author_photo_url'] ) ) {
+			$parsed['author_photo_url'] = $fm['author_photo_url'];
 		}
 
 		return $parsed;

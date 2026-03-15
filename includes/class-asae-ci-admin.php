@@ -63,6 +63,12 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_save_youtube_key',        [ __CLASS__, 'ajax_save_youtube_key' ] );
 		add_action( 'wp_ajax_asae_ci_save_youtube_channel_id', [ __CLASS__, 'ajax_save_youtube_channel_id' ] );
 		add_action( 'wp_ajax_asae_ci_generate_youtube_feed',   [ __CLASS__, 'ajax_generate_youtube_feed' ] );
+
+		// WordPress REST API Feed tab.
+		add_action( 'wp_ajax_asae_ci_wp_rest_discover_types',    [ __CLASS__, 'ajax_wp_rest_discover_types' ] );
+		add_action( 'wp_ajax_asae_ci_wp_rest_generate_feed',     [ __CLASS__, 'ajax_wp_rest_generate_feed' ] );
+		add_action( 'wp_ajax_asae_ci_wp_rest_clear_creds',       [ __CLASS__, 'ajax_wp_rest_clear_creds' ] );
+		add_action( 'wp_ajax_asae_ci_wp_rest_feed_status',       [ __CLASS__, 'ajax_wp_rest_feed_status' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -168,7 +174,7 @@ class ASAE_CI_Admin {
 		}
 
 		$active_tab = sanitize_key( $_GET['tab'] ?? 'run' );
-		if ( ! in_array( $active_tab, [ 'run', 'reports', 'youtube' ], true ) ) {
+		if ( ! in_array( $active_tab, [ 'run', 'reports', 'youtube', 'wp-rest' ], true ) ) {
 			$active_tab = 'run';
 		}
 
@@ -198,6 +204,12 @@ class ASAE_CI_Admin {
 			$yt_channel_id_mask  = $yt_channel_id ? self::mask_api_key( $yt_channel_id ) : '';
 			$yt_feed_status      = ASAE_CI_YouTube::get_feed_status();
 			$view             = ASAE_CI_PATH . 'admin/views/page-youtube.php';
+		} elseif ( 'wp-rest' === $active_tab ) {
+			// WordPress REST API Feed tab.
+			$wp_rest_feed_status = ASAE_CI_WP_REST::get_feed_status();
+			$wp_rest_has_creds   = ASAE_CI_WP_REST::has_credentials();
+			$wp_rest_site_url    = get_option( ASAE_CI_WP_REST::OPTION_SITE_URL, '' );
+			$view                = ASAE_CI_PATH . 'admin/views/page-wp-rest.php';
 		} else {
 			// Run tab (default).
 			$active_tab           = 'run';
@@ -904,5 +916,225 @@ class ASAE_CI_Admin {
 			return str_repeat( '•', $len );
 		}
 		return substr( $key, 0, 4 ) . str_repeat( '•', $len - 8 ) . substr( $key, -4 );
+	}
+
+	// ── WordPress REST API Feed Tab AJAX Handlers ────────────────────────────
+
+	/**
+	 * AJAX: Discovers content types on a remote WordPress site.
+	 *
+	 * Accepts: site_url, username (optional), app_password (optional).
+	 * Returns: array of types with slug, name, rest_base, count.
+	 */
+	public static function ajax_wp_rest_discover_types(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$site_url = esc_url_raw( wp_unslash( $_POST['site_url'] ?? '' ) );
+		if ( empty( $site_url ) ) {
+			wp_send_json_error( 'Site URL is required.' );
+		}
+
+		// Store credentials if provided.
+		$username     = sanitize_text_field( wp_unslash( $_POST['username'] ?? '' ) );
+		$app_password = sanitize_text_field( wp_unslash( $_POST['app_password'] ?? '' ) );
+		if ( $username && $app_password ) {
+			ASAE_CI_WP_REST::store_credentials( $username, $app_password );
+		}
+
+		// Save site URL for future page loads.
+		update_option( ASAE_CI_WP_REST::OPTION_SITE_URL, $site_url, false );
+
+		// Discover types.
+		$types = ASAE_CI_WP_REST::discover_post_types( $site_url );
+		if ( is_wp_error( $types ) ) {
+			wp_send_json_error( $types->get_error_message() );
+		}
+
+		// Fetch counts for each type.
+		$result = [];
+		foreach ( $types as $slug => $type ) {
+			$count    = ASAE_CI_WP_REST::fetch_type_count( $site_url, $type['rest_base'] );
+			$result[] = [
+				'slug'      => $slug,
+				'name'      => $type['name'],
+				'rest_base' => $type['rest_base'],
+				'count'     => $count,
+			];
+		}
+
+		wp_send_json_success( [
+			'types'    => $result,
+			'has_auth' => ASAE_CI_WP_REST::has_credentials(),
+		] );
+	}
+
+	/**
+	 * AJAX: Generates the WP REST feed one page at a time (chunked).
+	 *
+	 * Called repeatedly by JS until status is 'done'.
+	 * Accepts: site_url, post_types[] (on first call), page (1-based).
+	 */
+	public static function ajax_wp_rest_generate_feed(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$site_url = esc_url_raw( wp_unslash( $_POST['site_url'] ?? '' ) );
+		$page     = max( 1, (int) ( $_POST['page'] ?? 1 ) );
+
+		if ( empty( $site_url ) ) {
+			wp_send_json_error( 'Site URL is required.' );
+		}
+
+		// On the first call: resolve lookups and initialise state.
+		if ( 1 === $page ) {
+			$post_types_raw = $_POST['post_types'] ?? [];
+			if ( ! is_array( $post_types_raw ) || empty( $post_types_raw ) ) {
+				wp_send_json_error( 'Select at least one content type.' );
+			}
+
+			// Sanitize and store selected types.
+			$selected_types = [];
+			foreach ( $post_types_raw as $type_data ) {
+				$selected_types[] = [
+					'slug'      => sanitize_key( $type_data['slug'] ?? '' ),
+					'rest_base' => sanitize_key( $type_data['rest_base'] ?? '' ),
+				];
+			}
+
+			// Resolve lookups once.
+			$lookups = ASAE_CI_WP_REST::resolve_lookups( $site_url );
+			ASAE_CI_WP_REST::save_lookups( $lookups );
+
+			// Clear previous accumulated state.
+			ASAE_CI_WP_REST::clear_generation_state();
+			ASAE_CI_WP_REST::save_lookups( $lookups );
+
+			// Store selected types in transient for subsequent calls.
+			set_transient( 'asae_ci_wp_rest_selected_types', $selected_types, 2 * HOUR_IN_SECONDS );
+
+			// Determine total pages across all selected types.
+			$total_pages = 0;
+			$type_pages  = [];
+			foreach ( $selected_types as $type ) {
+				$count = ASAE_CI_WP_REST::fetch_type_count( $site_url, $type['rest_base'] );
+				$pages = max( 1, (int) ceil( $count / ASAE_CI_WP_REST::API_PAGE_SIZE ) );
+				$type_pages[] = [
+					'slug'      => $type['slug'],
+					'rest_base' => $type['rest_base'],
+					'pages'     => $pages,
+				];
+				$total_pages += $pages;
+			}
+
+			set_transient( 'asae_ci_wp_rest_type_pages', $type_pages, 2 * HOUR_IN_SECONDS );
+			ASAE_CI_WP_REST::save_generation_state( [], 0, $total_pages, 'fetching' );
+		}
+
+		// Load state.
+		$accumulated = ASAE_CI_WP_REST::get_accumulated_posts();
+		$type_pages  = get_transient( 'asae_ci_wp_rest_type_pages' );
+		$progress    = ASAE_CI_WP_REST::get_generation_progress();
+
+		if ( ! is_array( $type_pages ) || empty( $type_pages ) ) {
+			wp_send_json_error( 'Generation state lost. Please start over.' );
+		}
+
+		// Determine which type and page to fetch based on the global page counter.
+		$global_page   = $page;
+		$pages_before  = 0;
+
+		foreach ( $type_pages as $tp ) {
+			if ( $global_page <= $pages_before + $tp['pages'] ) {
+				// This is the type and local page to fetch.
+				$local_page = $global_page - $pages_before;
+				$result     = ASAE_CI_WP_REST::fetch_posts_page( $site_url, $tp['rest_base'], $local_page );
+
+				if ( is_wp_error( $result ) ) {
+					wp_send_json_error( $result->get_error_message() );
+				}
+
+				$accumulated = array_merge( $accumulated, $result['posts'] );
+				break;
+			}
+			$pages_before += $tp['pages'];
+		}
+
+		$total_pages = (int) $progress['total_pages'];
+
+		// Check if we've fetched all pages.
+		if ( $global_page >= $total_pages ) {
+			// All pages fetched — generate feed and save.
+			ASAE_CI_WP_REST::save_generation_state( $accumulated, $global_page, $total_pages, 'generating' );
+
+			$lookups = ASAE_CI_WP_REST::get_stored_lookups();
+			if ( ! is_array( $lookups ) ) {
+				$lookups = ASAE_CI_WP_REST::resolve_lookups( $site_url );
+			}
+
+			$feed_xml = ASAE_CI_WP_REST::generate_feed( $accumulated, $lookups, $site_url );
+			$feed_url = ASAE_CI_WP_REST::save_feed( $feed_xml );
+
+			if ( is_wp_error( $feed_url ) ) {
+				wp_send_json_error( $feed_url->get_error_message() );
+			}
+
+			// Generate and save author sidecar.
+			$author_meta = ASAE_CI_WP_REST::generate_author_metadata( $accumulated, $lookups );
+			ASAE_CI_WP_REST::save_author_sidecar( $author_meta );
+
+			// Clean up.
+			ASAE_CI_WP_REST::clear_generation_state();
+			delete_transient( 'asae_ci_wp_rest_type_pages' );
+			delete_transient( 'asae_ci_wp_rest_selected_types' );
+
+			wp_send_json_success( [
+				'status'      => 'done',
+				'feed_url'    => $feed_url,
+				'total_posts' => count( $accumulated ),
+				'page'        => $global_page,
+				'total_pages' => $total_pages,
+				'has_authors' => ! empty( $author_meta ),
+			] );
+		} else {
+			// More pages to fetch — save state and continue.
+			ASAE_CI_WP_REST::save_generation_state( $accumulated, $global_page, $total_pages, 'fetching' );
+
+			wp_send_json_success( [
+				'status'      => 'fetching',
+				'total_posts' => count( $accumulated ),
+				'page'        => $global_page,
+				'total_pages' => $total_pages,
+			] );
+		}
+	}
+
+	/**
+	 * AJAX: Clears WP REST API credentials.
+	 */
+	public static function ajax_wp_rest_clear_creds(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		ASAE_CI_WP_REST::clear_credentials();
+		wp_send_json_success();
+	}
+
+	/**
+	 * AJAX: Returns the current WP REST feed status.
+	 */
+	public static function ajax_wp_rest_feed_status(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		wp_send_json_success( ASAE_CI_WP_REST::get_feed_status() );
 	}
 }

@@ -1286,4 +1286,198 @@
 		} );
 	}
 
+	// ── WordPress REST API Feed Tab ──────────────────────────────────────────
+
+	// Only initialise WP REST handlers when the tab is active.
+	if ( $( '#asae-ci-wp-rest-app' ).length ) {
+
+		var $wprSiteUrl      = $( '#asae-ci-wpr-site-url' );
+		var $wprUsername      = $( '#asae-ci-wpr-username' );
+		var $wprAppPassword  = $( '#asae-ci-wpr-app-password' );
+		var $wprDiscoverBtn  = $( '#asae-ci-wpr-discover-btn' );
+		var $wprDiscoverMsg  = $( '#asae-ci-wpr-discover-msg' );
+		var $wprTypesPanel   = $( '#asae-ci-wpr-types-panel' );
+		var $wprTypesList    = $( '#asae-ci-wpr-types-list' );
+		var $wprGenerateBtn  = $( '#asae-ci-wpr-generate-btn' );
+		var $wprGenerateMsg  = $( '#asae-ci-wpr-generate-msg' );
+		var $wprProgress     = $( '#asae-ci-wpr-progress' );
+		var $wprProgressBar  = $( '#asae-ci-wpr-progress-bar' );
+		var $wprProgressText = $( '#asae-ci-wpr-progress-text' );
+
+		var wprDiscoveredTypes = [];
+
+		// ── Discover Content Types ───────────────────────────────────────────
+
+		$wprDiscoverBtn.on( 'click', function () {
+			var siteUrl = $wprSiteUrl.val().trim();
+			if ( ! siteUrl ) {
+				$wprDiscoverMsg.text( 'Please enter a site URL.' ).css( 'color', '#d63638' );
+				return;
+			}
+
+			$wprDiscoverBtn.prop( 'disabled', true );
+			$wprDiscoverMsg.text( 'Discovering content types…' ).css( 'color', '' );
+			$wprTypesPanel.addClass( 'asae-ci-hidden' );
+
+			$.post( asaeCi.ajaxUrl, {
+				action:       'asae_ci_wp_rest_discover_types',
+				nonce:        asaeCi.nonce,
+				site_url:     siteUrl,
+				username:     $wprUsername.val().trim(),
+				app_password: $wprAppPassword.val().trim(),
+			} )
+			.done( function ( resp ) {
+				$wprDiscoverBtn.prop( 'disabled', false );
+
+				if ( ! resp.success ) {
+					$wprDiscoverMsg.text( resp.data || 'Discovery failed.' ).css( 'color', '#d63638' );
+					return;
+				}
+
+				wprDiscoveredTypes = resp.data.types || [];
+
+				if ( wprDiscoveredTypes.length === 0 ) {
+					$wprDiscoverMsg.text( 'No content types found.' ).css( 'color', '#d63638' );
+					return;
+				}
+
+				var authNote = resp.data.has_auth
+					? ' Authenticated — full author data available.'
+					: ' No credentials — author data limited to Yoast schema.';
+				$wprDiscoverMsg.text( 'Found ' + wprDiscoveredTypes.length + ' content types.' + authNote ).css( 'color', '#46b450' );
+
+				// Render checkboxes.
+				var html = '';
+				for ( var i = 0; i < wprDiscoveredTypes.length; i++ ) {
+					var t = wprDiscoveredTypes[ i ];
+					var checked = ( t.slug === 'post' ) ? ' checked' : '';
+					html += '<label class="asae-ci-wpr-type-label" style="display:block;margin:.4em 0;">';
+					html += '<input type="checkbox" class="asae-ci-wpr-type-cb" data-idx="' + i + '"' + checked + ' /> ';
+					html += '<strong>' + $( '<span>' ).text( t.name ).html() + '</strong>';
+					html += ' <code>(' + $( '<span>' ).text( t.slug ).html() + ')</code>';
+					html += ' — ' + ( t.count > 0 ? t.count.toLocaleString() + ' items' : 'count unavailable' );
+					html += '</label>';
+				}
+				$wprTypesList.html( html );
+				$wprTypesPanel.removeClass( 'asae-ci-hidden' );
+				updateGenerateBtn();
+			} )
+			.fail( function () {
+				$wprDiscoverBtn.prop( 'disabled', false );
+				$wprDiscoverMsg.text( 'Request failed. Check the URL and try again.' ).css( 'color', '#d63638' );
+			} );
+		} );
+
+		// Enable/disable Generate button based on checkbox selection.
+		function updateGenerateBtn() {
+			var anyChecked = $wprTypesList.find( '.asae-ci-wpr-type-cb:checked' ).length > 0;
+			$wprGenerateBtn.prop( 'disabled', ! anyChecked );
+		}
+
+		$( document ).on( 'change', '.asae-ci-wpr-type-cb', updateGenerateBtn );
+
+		// ── Generate Feed (chunked) ──────────────────────────────────────────
+
+		$wprGenerateBtn.on( 'click', function () {
+			var siteUrl = $wprSiteUrl.val().trim();
+			if ( ! siteUrl ) {
+				return;
+			}
+
+			// Collect selected types.
+			var selectedTypes = [];
+			$wprTypesList.find( '.asae-ci-wpr-type-cb:checked' ).each( function () {
+				var idx = parseInt( $( this ).data( 'idx' ), 10 );
+				if ( wprDiscoveredTypes[ idx ] ) {
+					selectedTypes.push( {
+						slug:      wprDiscoveredTypes[ idx ].slug,
+						rest_base: wprDiscoveredTypes[ idx ].rest_base,
+					} );
+				}
+			} );
+
+			if ( selectedTypes.length === 0 ) {
+				return;
+			}
+
+			$wprGenerateBtn.prop( 'disabled', true );
+			$wprGenerateMsg.text( '' );
+			$wprProgress.removeClass( 'asae-ci-hidden' );
+			$wprProgressBar.css( 'width', '0%' );
+			$wprProgressText.text( 'Starting feed generation…' );
+
+			// Chunked fetch: page 1 sends post_types, subsequent pages just send page number.
+			var currentPage = 1;
+
+			function fetchNextPage() {
+				var postData = {
+					action:   'asae_ci_wp_rest_generate_feed',
+					nonce:    asaeCi.nonce,
+					site_url: siteUrl,
+					page:     currentPage,
+				};
+
+				// Only send post_types on the first call.
+				if ( currentPage === 1 ) {
+					postData.post_types = selectedTypes;
+				}
+
+				$.post( asaeCi.ajaxUrl, postData )
+				.done( function ( resp ) {
+					if ( ! resp.success ) {
+						$wprGenerateBtn.prop( 'disabled', false );
+						$wprGenerateMsg.text( resp.data || 'Generation failed.' ).css( 'color', '#d63638' );
+						$wprProgress.addClass( 'asae-ci-hidden' );
+						return;
+					}
+
+					var d = resp.data;
+					var pct = d.total_pages > 0 ? Math.round( ( d.page / d.total_pages ) * 100 ) : 0;
+					$wprProgressBar.css( 'width', pct + '%' );
+					$( '#asae-ci-wpr-progress-bar-wrap' ).attr( 'aria-valuenow', pct );
+					$wprProgressText.text(
+						'Fetching page ' + d.page + ' of ' + d.total_pages +
+						' (' + d.total_posts.toLocaleString() + ' posts)…'
+					);
+
+					if ( d.status === 'done' ) {
+						$wprProgressBar.css( 'width', '100%' );
+						$wprProgressText.text(
+							'Feed generated: ' + d.total_posts.toLocaleString() + ' entries.' +
+							( d.has_authors ? ' Author sidecar saved.' : '' )
+						);
+						$wprGenerateMsg.html(
+							'<a href="' + encodeURI( window.location.pathname + '?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( d.feed_url ) ) + '" class="button button-primary" style="margin-right:.5em;">Use in Run Tab &rarr;</a>' +
+							'<a href="' + d.feed_url + '" class="button" target="_blank" rel="noopener">Download Feed XML</a>'
+						);
+						$wprGenerateBtn.prop( 'disabled', false );
+					} else {
+						currentPage++;
+						fetchNextPage();
+					}
+				} )
+				.fail( function () {
+					$wprGenerateBtn.prop( 'disabled', false );
+					$wprGenerateMsg.text( 'Request failed.' ).css( 'color', '#d63638' );
+					$wprProgress.addClass( 'asae-ci-hidden' );
+				} );
+			}
+
+			fetchNextPage();
+		} );
+
+		// ── Clear Credentials ────────────────────────────────────────────────
+
+		$( '#asae-ci-wpr-clear-creds-btn' ).on( 'click', function () {
+			$.post( asaeCi.ajaxUrl, {
+				action: 'asae_ci_wp_rest_clear_creds',
+				nonce:  asaeCi.nonce,
+			} ).done( function () {
+				$( '#asae-ci-wpr-creds-status' ).html(
+					'<span style="color:#d63638;">Credentials cleared.</span>'
+				);
+			} );
+		} );
+	}
+
 } )( jQuery );
