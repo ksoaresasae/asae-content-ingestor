@@ -1441,18 +1441,12 @@
 					);
 
 					if ( d.status === 'done' ) {
-						$wprProgressBar.css( 'width', '100%' );
-						$wprProgressText.text(
+						// Hide progress bar and show completion message inline.
+						$wprProgress.addClass( 'asae-ci-hidden' );
+						$wprGenerateMsg.text(
 							'Feed generated: ' + d.total_posts.toLocaleString() + ' entries.' +
 							( d.has_authors ? ' Author sidecar saved.' : '' )
-						);
-
-						// Show completion actions below the progress bar.
-						var $completeActions = $( '#asae-ci-wpr-complete-actions' );
-						$completeActions.html(
-							'<a href="' + escAttr( window.location.pathname + '?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( d.feed_url ) ) + '" class="button button-primary">Use in Run Tab &rarr;</a>' +
-							'<a href="' + escAttr( d.feed_url ) + '" class="button" target="_blank" rel="noopener">Download Feed XML</a>'
-						).removeClass( 'asae-ci-hidden' );
+						).css( 'color', '#46b450' );
 
 						// Update the persistent "Generated Feed" status section.
 						var $statusSection = $( '#asae-ci-wpr-status-section' );
@@ -1467,6 +1461,9 @@
 							'<a href="' + escAttr( d.feed_url ) + '" class="button" target="_blank" rel="noopener noreferrer">Download Feed XML</a>'
 						);
 						$statusSection.removeClass( 'asae-ci-hidden' );
+
+						// Scroll to the status section.
+						$( 'html, body' ).animate( { scrollTop: $statusSection.offset().top - 40 }, 300 );
 
 						$wprGenerateBtn.prop( 'disabled', false );
 					} else {

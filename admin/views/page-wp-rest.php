@@ -153,8 +153,8 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<span id="asae-ci-wpr-generate-msg" class="asae-ci-yt-inline-msg" role="status" aria-live="polite"></span>
 		</div>
 
-		<!-- Progress area (shown during generation) -->
-		<div id="asae-ci-wpr-progress" class="asae-ci-hidden" aria-live="polite">
+		<!-- Progress area (shown during generation, hidden on completion) -->
+		<div id="asae-ci-wpr-progress" class="asae-ci-hidden" style="margin-top:1.25em;" aria-live="polite">
 			<div class="asae-ci-progress-bar-wrap" role="progressbar"
 				 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
 				 id="asae-ci-wpr-progress-bar-wrap"
@@ -164,9 +164,6 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<p id="asae-ci-wpr-progress-text" class="asae-ci-yt-progress-text"></p>
 		</div>
 
-		<!-- Completion actions (shown after generation finishes) -->
-		<div id="asae-ci-wpr-complete-actions" class="asae-ci-yt-actions asae-ci-hidden" style="margin-top:1em;">
-		</div>
 	</section>
 
 	<!-- ── Feed Status (shown when a feed file exists) ─────────────────── -->
