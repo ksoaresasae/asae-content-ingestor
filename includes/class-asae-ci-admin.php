@@ -543,10 +543,12 @@ class ASAE_CI_Admin {
 	}
 
 	/**
-	 * Applies a single category to ALL pending review items (server-side batch).
+	 * Applies a single category to a batch of pending review items.
 	 *
-	 * Used for the "Apply to ALL N items" bulk action. Processes items in
-	 * internal batches of 50 to manage memory.
+	 * Processes up to 50 items per call to stay within PHP time limits.
+	 * The JS client calls this repeatedly until `remaining` reaches 0.
+	 *
+	 * Returns: { applied: N, remaining: N, total: N, status: 'processing'|'completed' }
 	 *
 	 * @return void
 	 */
@@ -569,6 +571,7 @@ class ASAE_CI_Admin {
 		$queue_data     = json_decode( $job['queue_data'], true );
 		$pending_review = $queue_data['pending_review'] ?? [];
 		$post_type      = $job['post_type'] ?? 'post';
+		$total_start    = count( $pending_review );
 
 		// Determine taxonomy.
 		$tax = 'post' === $post_type ? 'category' : '';
@@ -586,9 +589,12 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'No category taxonomy found.', 'asae-content-ingestor' ) ] );
 		}
 
-		// Process all pending items.
-		$applied = 0;
-		foreach ( $pending_review as $item ) {
+		// Process up to 50 items per request.
+		$batch_size = 50;
+		$batch      = array_splice( $pending_review, 0, $batch_size );
+		$applied    = 0;
+
+		foreach ( $batch as $item ) {
 			$post_id = (int) ( $item['post_id'] ?? 0 );
 			if ( $post_id <= 0 ) {
 				continue;
@@ -600,19 +606,31 @@ class ASAE_CI_Admin {
 			$applied++;
 		}
 
-		// Clear pending_review and mark job completed.
-		$queue_data['pending_review'] = [];
-		ASAE_CI_Scheduler::update_job( $job_key, [
-			'status'     => 'completed',
-			'queue_data' => wp_json_encode( $queue_data ),
-		] );
-		if ( $job['report_id'] ) {
-			ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'completed' ] );
+		$remaining = count( $pending_review );
+
+		// Save updated pending_review (with processed items removed).
+		$queue_data['pending_review'] = array_values( $pending_review );
+
+		if ( 0 === $remaining ) {
+			// All done — mark job completed.
+			ASAE_CI_Scheduler::update_job( $job_key, [
+				'status'     => 'completed',
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
+			if ( $job['report_id'] ) {
+				ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'completed' ] );
+			}
+		} else {
+			ASAE_CI_Scheduler::update_job( $job_key, [
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
 		}
 
 		wp_send_json_success( [
-			'applied' => $applied,
-			'status'  => 'completed',
+			'applied'   => $applied,
+			'remaining' => $remaining,
+			'total'     => $total_start,
+			'status'    => 0 === $remaining ? 'completed' : 'processing',
 		] );
 	}
 

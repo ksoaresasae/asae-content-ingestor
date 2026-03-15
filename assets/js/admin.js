@@ -729,7 +729,7 @@
 		}
 	} );
 
-	// "Apply to ALL N items" button – server-side bulk apply.
+	// "Apply to ALL N items" button – chunked server-side bulk apply.
 	$applyAllBtn.on( 'click', function () {
 		var termId = $bulkCatSelect.val();
 		if ( ! termId ) {
@@ -741,55 +741,73 @@
 			return;
 		}
 
-		$applyAllBtn.prop( 'disabled', true ).text( 'Applying\u2026' );
+		$applyAllBtn.prop( 'disabled', true );
 		$applyBtn.prop( 'disabled', true );
 		$reviewError.text( '' );
 
-		$.ajax( {
-			url    : asaeCi.ajaxUrl,
-			method : 'POST',
-			data   : {
-				action  : 'asae_ci_apply_category_to_all',
-				nonce   : asaeCi.nonce,
-				job_key : currentJobKey,
-				term_id : termId,
-			},
-		} )
-		.done( function ( response ) {
-			$applyAllBtn.prop( 'disabled', false );
-			$applyBtn.prop( 'disabled', false );
-			if ( ! response.success ) {
-				$applyAllBtn.text( 'Apply to ALL ' + reviewTotal + ' items' );
-				$reviewError.text( response.data && response.data.message ? response.data.message : 'An error occurred.' );
-				return;
-			}
+		var totalApplied = 0;
+		var originalTotal = reviewTotal;
 
-			var d = response.data;
-			if ( 'completed' === d.status ) {
-				reviewAssignments = {};
-				$reviewPanel.addClass( 'asae-ci-hidden' );
-				$applyProgress.text( 'Applied category to ' + d.applied + ' items.' );
-				// Refresh job state to show completion.
-				$.ajax( {
-					url    : asaeCi.ajaxUrl,
-					method : 'POST',
-					data   : {
-						action  : 'asae_ci_get_progress',
-						nonce   : asaeCi.nonce,
-						job_key : currentJobKey,
-					},
-				} ).done( function ( resp ) {
-					if ( resp.success ) {
-						onJobComplete( resp.data );
-					}
-				} );
-			}
-		} )
-		.fail( function () {
-			$applyAllBtn.prop( 'disabled', false ).text( 'Apply to ALL ' + reviewTotal + ' items' );
-			$applyBtn.prop( 'disabled', false );
-			$reviewError.text( 'Network error. Please try again.' );
-		} );
+		function applyNextBatch() {
+			$applyProgress.text( 'Publishing\u2026 ' + totalApplied + ' of ' + originalTotal + ' done' );
+
+			$.ajax( {
+				url    : asaeCi.ajaxUrl,
+				method : 'POST',
+				data   : {
+					action  : 'asae_ci_apply_category_to_all',
+					nonce   : asaeCi.nonce,
+					job_key : currentJobKey,
+					term_id : termId,
+				},
+			} )
+			.done( function ( response ) {
+				if ( ! response.success ) {
+					$applyAllBtn.prop( 'disabled', false ).text( 'Apply to ALL ' + reviewTotal + ' items' );
+					$applyBtn.prop( 'disabled', false );
+					$applyProgress.text( '' );
+					$reviewError.text( response.data && response.data.message ? response.data.message : 'An error occurred.' );
+					return;
+				}
+
+				var d = response.data;
+				totalApplied += d.applied;
+
+				if ( 'completed' === d.status ) {
+					reviewAssignments = {};
+					$reviewPanel.addClass( 'asae-ci-hidden' );
+					$applyProgress.text( 'Applied category to ' + totalApplied + ' items.' );
+					$applyAllBtn.prop( 'disabled', false );
+					$applyBtn.prop( 'disabled', false );
+					// Refresh job state to show completion.
+					$.ajax( {
+						url    : asaeCi.ajaxUrl,
+						method : 'POST',
+						data   : {
+							action  : 'asae_ci_get_progress',
+							nonce   : asaeCi.nonce,
+							job_key : currentJobKey,
+						},
+					} ).done( function ( resp ) {
+						if ( resp.success ) {
+							onJobComplete( resp.data );
+						}
+					} );
+				} else {
+					// More items remain — send next batch.
+					$applyProgress.text( 'Publishing\u2026 ' + totalApplied + ' of ' + originalTotal + ' done' );
+					applyNextBatch();
+				}
+			} )
+			.fail( function () {
+				$applyAllBtn.prop( 'disabled', false ).text( 'Apply to ALL ' + reviewTotal + ' items' );
+				$applyBtn.prop( 'disabled', false );
+				$applyProgress.text( '' );
+				$reviewError.text( 'Network error after ' + totalApplied + ' items. Click again to resume.' );
+			} );
+		}
+
+		applyNextBatch();
 	} );
 
 	// "Apply Categories & Publish" – batched per-item assignments.
