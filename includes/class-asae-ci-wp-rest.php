@@ -274,57 +274,82 @@ class ASAE_CI_WP_REST {
 		$users = [];
 		$page  = 1;
 
-		do {
-			$url = add_query_arg( [
-				'per_page' => 100,
-				'page'     => $page,
-				'context'  => 'edit',
-			], trailingslashit( $site_url ) . 'wp-json/wp/v2/users' );
+		// Try context=edit first (returns email), fall back to context=view.
+		// context=edit requires edit_users capability which many Application
+		// Password setups don't grant; context=view works with basic auth and
+		// still returns name, description, avatar_urls, url, and link.
+		$contexts = [ 'edit', 'view' ];
+		$auth     = self::get_auth_headers();
 
-			$response = wp_remote_get( $url, [
-				'timeout' => 30,
-				'headers' => self::get_auth_headers(),
-			] );
+		foreach ( $contexts as $context ) {
+			$page  = 1;
+			$users = [];
 
-			if ( is_wp_error( $response ) ) {
-				break;
-			}
+			do {
+				$url = add_query_arg( [
+					'per_page' => 100,
+					'page'     => $page,
+					'context'  => $context,
+				], trailingslashit( $site_url ) . 'wp-json/wp/v2/users' );
 
-			$code = wp_remote_retrieve_response_code( $response );
+				$response = wp_remote_get( $url, [
+					'timeout' => 30,
+					'headers' => $auth,
+				] );
 
-			// 401 = not authenticated; fall back gracefully.
-			if ( 401 === $code || 403 === $code ) {
-				break;
-			}
-
-			if ( 200 !== $code ) {
-				break;
-			}
-
-			$body = json_decode( wp_remote_retrieve_body( $response ), true );
-			if ( ! is_array( $body ) || empty( $body ) ) {
-				break;
-			}
-
-			foreach ( $body as $user ) {
-				$uid = (int) ( $user['id'] ?? 0 );
-				if ( ! $uid ) {
-					continue;
+				if ( is_wp_error( $response ) ) {
+					break 2; // Network error — give up entirely.
 				}
-				$users[ $uid ] = [
-					'name'        => $user['name'] ?? '',
-					'description' => $user['description'] ?? '',
-					'avatar_urls' => $user['avatar_urls'] ?? [],
-					'url'         => $user['url'] ?? '',
-					'email'       => $user['email'] ?? '',
-					'link'        => $user['link'] ?? '',
-				];
+
+				$code = wp_remote_retrieve_response_code( $response );
+
+				// 401/403 = permission denied for this context.
+				if ( 401 === $code || 403 === $code ) {
+					break; // Try next context.
+				}
+
+				if ( 200 !== $code ) {
+					break;
+				}
+
+				$body = json_decode( wp_remote_retrieve_body( $response ), true );
+				if ( ! is_array( $body ) || empty( $body ) ) {
+					break;
+				}
+
+				foreach ( $body as $user ) {
+					$uid = (int) ( $user['id'] ?? 0 );
+					if ( ! $uid ) {
+						continue;
+					}
+
+					// description is a string in context=view, but
+					// { raw, rendered } object in context=edit.
+					$desc = $user['description'] ?? '';
+					if ( is_array( $desc ) ) {
+						$desc = $desc['raw'] ?? $desc['rendered'] ?? '';
+					}
+
+					$users[ $uid ] = [
+						'name'        => $user['name'] ?? '',
+						'description' => $desc,
+						'avatar_urls' => $user['avatar_urls'] ?? [],
+						'url'         => $user['url'] ?? '',
+						'email'       => $user['email'] ?? '',
+						'link'        => $user['link'] ?? '',
+					];
+				}
+
+				$total_pages = (int) wp_remote_retrieve_header( $response, 'x-wp-totalpages' );
+				$page++;
+
+			} while ( $page <= $total_pages );
+
+			// If we got users with this context, we're done.
+			if ( ! empty( $users ) ) {
+				break;
 			}
-
-			$total_pages = (int) wp_remote_retrieve_header( $response, 'x-wp-totalpages' );
-			$page++;
-
-		} while ( $page <= $total_pages );
+		}
 
 		return $users;
 	}
@@ -428,10 +453,12 @@ class ASAE_CI_WP_REST {
 				}
 			}
 
-			// Excerpt.
+			// Excerpt: strip HTML tags and decode entities (the REST API returns
+			// HTML-encoded excerpts like &#8217; which would double-encode in XML).
 			$excerpt = '';
 			if ( ! empty( $post['excerpt']['rendered'] ) ) {
 				$excerpt = wp_strip_all_tags( $post['excerpt']['rendered'] );
+				$excerpt = html_entity_decode( $excerpt, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
 				$excerpt = trim( $excerpt );
 			}
 
@@ -699,10 +726,17 @@ class ASAE_CI_WP_REST {
 	/**
 	 * Escapes a string for safe inclusion in XML text content.
 	 *
+	 * Strips control characters that are invalid in XML 1.0 (everything below
+	 * 0x20 except TAB 0x09, LF 0x0A, CR 0x0D) before applying standard XML
+	 * entity escaping. Source APIs sometimes include stray BEL (0x07) or other
+	 * control chars that cause XML parsers to reject the document.
+	 *
 	 * @param string $str Raw string.
 	 * @return string XML-safe string.
 	 */
 	private static function xml_escape( string $str ): string {
+		// Strip XML-invalid control characters (keep tab, newline, carriage return).
+		$str = preg_replace( '/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $str );
 		return htmlspecialchars( $str, ENT_XML1 | ENT_QUOTES, 'UTF-8' );
 	}
 }

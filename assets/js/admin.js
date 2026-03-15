@@ -1446,10 +1446,28 @@
 							'Feed generated: ' + d.total_posts.toLocaleString() + ' entries.' +
 							( d.has_authors ? ' Author sidecar saved.' : '' )
 						);
-						$wprGenerateMsg.html(
-							'<a href="' + encodeURI( window.location.pathname + '?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( d.feed_url ) ) + '" class="button button-primary" style="margin-right:.5em;">Use in Run Tab &rarr;</a>' +
-							'<a href="' + d.feed_url + '" class="button" target="_blank" rel="noopener">Download Feed XML</a>'
+
+						// Show completion actions below the progress bar.
+						var $completeActions = $( '#asae-ci-wpr-complete-actions' );
+						$completeActions.html(
+							'<a href="' + escAttr( window.location.pathname + '?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( d.feed_url ) ) + '" class="button button-primary">Use in Run Tab &rarr;</a>' +
+							'<a href="' + escAttr( d.feed_url ) + '" class="button" target="_blank" rel="noopener">Download Feed XML</a>'
+						).removeClass( 'asae-ci-hidden' );
+
+						// Update the persistent "Generated Feed" status section.
+						var $statusSection = $( '#asae-ci-wpr-status-section' );
+						$( '#asae-ci-wpr-status-url' ).html( '<a href="' + escAttr( d.feed_url ) + '" target="_blank" rel="noopener noreferrer">' + escHtml( d.feed_url ) + '</a>' );
+						$( '#asae-ci-wpr-status-count' ).html(
+							d.total_posts.toLocaleString() +
+							( d.has_authors ? ' <span class="description">(includes author sidecar data)</span>' : '' )
 						);
+						$( '#asae-ci-wpr-status-date' ).text( 'Just now' );
+						$( '#asae-ci-wpr-status-actions' ).html(
+							'<a href="' + escAttr( window.location.pathname + '?page=asae-content-ingestor&prefill_feed=' + encodeURIComponent( d.feed_url ) ) + '" class="button button-primary">Use in Run Tab &rarr;</a> ' +
+							'<a href="' + escAttr( d.feed_url ) + '" class="button" target="_blank" rel="noopener noreferrer">Download Feed XML</a>'
+						);
+						$statusSection.removeClass( 'asae-ci-hidden' );
+
 						$wprGenerateBtn.prop( 'disabled', false );
 					} else {
 						currentPage++;

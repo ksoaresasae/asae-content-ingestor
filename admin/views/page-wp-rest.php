@@ -163,40 +163,54 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			</div>
 			<p id="asae-ci-wpr-progress-text" class="asae-ci-yt-progress-text"></p>
 		</div>
+
+		<!-- Completion actions (shown after generation finishes) -->
+		<div id="asae-ci-wpr-complete-actions" class="asae-ci-yt-actions asae-ci-hidden" style="margin-top:1em;">
+		</div>
 	</section>
 
 	<!-- ── Feed Status (shown when a feed file exists) ─────────────────── -->
-	<?php if ( $wp_rest_feed_status['exists'] ) : ?>
-	<section class="asae-ci-card" id="asae-ci-wpr-status-section" aria-labelledby="asae-ci-wpr-status-heading">
+	<section
+		class="asae-ci-card <?php echo $wp_rest_feed_status['exists'] ? '' : 'asae-ci-hidden'; ?>"
+		id="asae-ci-wpr-status-section"
+		aria-labelledby="asae-ci-wpr-status-heading"
+	>
 		<h2 id="asae-ci-wpr-status-heading"><?php esc_html_e( 'Generated Feed', 'asae-content-ingestor' ); ?></h2>
 
 		<table class="asae-ci-summary-table" role="presentation">
 			<tbody>
 				<tr>
 					<th scope="row"><?php esc_html_e( 'Feed URL', 'asae-content-ingestor' ); ?></th>
-					<td>
+					<td id="asae-ci-wpr-status-url">
+						<?php if ( $wp_rest_feed_status['exists'] ) : ?>
 						<a href="<?php echo esc_url( $wp_rest_feed_status['url'] ); ?>" target="_blank" rel="noopener noreferrer">
 							<?php echo esc_html( $wp_rest_feed_status['url'] ); ?>
 						</a>
+						<?php endif; ?>
 					</td>
 				</tr>
 				<tr>
 					<th scope="row"><?php esc_html_e( 'Entries', 'asae-content-ingestor' ); ?></th>
-					<td>
+					<td id="asae-ci-wpr-status-count">
+						<?php if ( $wp_rest_feed_status['exists'] ) : ?>
 						<?php echo (int) $wp_rest_feed_status['count']; ?>
 						<?php if ( $wp_rest_feed_status['has_authors'] ) : ?>
 							<span class="description"><?php esc_html_e( '(includes author sidecar data)', 'asae-content-ingestor' ); ?></span>
+						<?php endif; ?>
 						<?php endif; ?>
 					</td>
 				</tr>
 				<tr>
 					<th scope="row"><?php esc_html_e( 'Generated', 'asae-content-ingestor' ); ?></th>
-					<td><?php echo esc_html( $wp_rest_feed_status['date'] ); ?></td>
+					<td id="asae-ci-wpr-status-date">
+						<?php echo esc_html( $wp_rest_feed_status['exists'] ? $wp_rest_feed_status['date'] : '' ); ?>
+					</td>
 				</tr>
 			</tbody>
 		</table>
 
-		<div class="asae-ci-yt-actions" style="margin-top: .75rem;">
+		<div class="asae-ci-yt-actions" id="asae-ci-wpr-status-actions" style="margin-top: .75rem;">
+			<?php if ( $wp_rest_feed_status['exists'] ) : ?>
 			<a
 				href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&prefill_feed=' . rawurlencode( $wp_rest_feed_status['url'] ) ) ); ?>"
 				class="button button-primary"
@@ -206,8 +220,8 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<a href="<?php echo esc_url( $wp_rest_feed_status['url'] ); ?>" class="button" target="_blank" rel="noopener noreferrer">
 				<?php esc_html_e( 'Download Feed XML', 'asae-content-ingestor' ); ?>
 			</a>
+			<?php endif; ?>
 		</div>
 	</section>
-	<?php endif; ?>
 
 </div><!-- .asae-ci-wrap -->
