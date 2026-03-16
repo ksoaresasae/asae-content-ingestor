@@ -125,11 +125,16 @@ class ASAE_CI_Admin {
 			true  // Load in footer.
 		);
 
+		// Detect any running job so the JS can auto-resume polling on page load.
+		$running_job     = ASAE_CI_Scheduler::get_running_job();
+		$running_job_key = $running_job ? $running_job['job_key'] : '';
+
 		// Pass server-side data to the JS.
 		wp_localize_script( 'asae-ci-admin', 'asaeCi', [
-			'ajaxUrl'   => admin_url( 'admin-ajax.php' ),
-			'nonce'     => wp_create_nonce( self::AJAX_NONCE ),
-			'strings'   => [
+			'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
+			'nonce'         => wp_create_nonce( self::AJAX_NONCE ),
+			'runningJobKey' => $running_job_key,
+			'strings'       => [
 				'startingJob'    => __( 'Starting job…', 'asae-content-ingestor' ),
 				'discovering'    => __( 'Reading RSS feed…', 'asae-content-ingestor' ),
 				'ingesting'      => __( 'Ingesting content…', 'asae-content-ingestor' ),

@@ -75,6 +75,19 @@
 		}
 	} )();
 
+	// ── Auto-Resume Running Job ──────────────────────────────────────────────
+	// If the server detected a job still in 'running' status (e.g. after a
+	// session timeout or page reload), auto-resume the polling loop so the
+	// admin doesn't have to restart the entire run.
+
+	if ( asaeCi.runningJobKey ) {
+		currentJobKey = asaeCi.runningJobKey;
+		$progressPanel.removeClass( 'asae-ci-hidden' );
+		setSubmitBusy( true );
+		updatePhaseLabel( 'ingesting' );
+		startPollingLoop();
+	}
+
 	// ── Form Submission ──────────────────────────────────────────────────────
 
 	$form.on( 'submit', function ( e ) {

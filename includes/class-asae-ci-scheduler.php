@@ -535,6 +535,25 @@ class ASAE_CI_Scheduler {
 	}
 
 	/**
+	 * Returns the most recent job that is still in 'running' status.
+	 *
+	 * Used on page load to detect an interrupted job (e.g. after session
+	 * expiry) so the browser can auto-resume its polling loop.
+	 *
+	 * @return array|null Job data array or null if no running job exists.
+	 */
+	public static function get_running_job(): ?array {
+		global $wpdb;
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$row = $wpdb->get_row(
+			'SELECT * FROM ' . ASAE_CI_DB::jobs_table() . " WHERE status = 'running' ORDER BY id DESC LIMIT 1",
+			ARRAY_A
+		);
+		// phpcs:enable
+		return $row ?: null;
+	}
+
+	/**
 	 * Updates specified fields on a job record.
 	 *
 	 * @param string $job_key The job key.
