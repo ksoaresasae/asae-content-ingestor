@@ -681,6 +681,49 @@ fieldset.asae-ci-field legend {
 	flex-wrap: wrap;
 }
 
+/* ── Resume / Cancel Banner ──────────────────────────────────────────────── */
+
+.asae-ci-resume-banner {
+	border-left: 4px solid #dba617;
+	background: #fff8e5;
+}
+
+.asae-ci-resume-banner p {
+	margin: 0 0 .75rem;
+}
+
+.asae-ci-resume-actions {
+	display: flex;
+	gap: .75rem;
+	flex-wrap: wrap;
+}
+
+/* ── Keep-Alive Toggle ───────────────────────────────────────────────────── */
+
+.asae-ci-toggle-label {
+	display: inline-flex;
+	align-items: center;
+	gap: .5rem;
+	font-weight: 400;
+	cursor: pointer;
+}
+
+.asae-ci-toggle-label input[type="checkbox"] {
+	width: 18px;
+	height: 18px;
+	margin: 0;
+	accent-color: #2271b1;
+	cursor: pointer;
+}
+
+.asae-ci-keep-alive-status {
+	display: block;
+	margin-top: .35rem;
+	font-size: .8125rem;
+	font-style: italic;
+	color: #1d7444;
+}
+
 /* ── WordPress REST API Tab ──────────────────────────────────────────────── */
 
 /* Content type checkboxes list */

@@ -235,6 +235,18 @@ if ( ! current_user_can( 'manage_options' ) ) {
 				</div>
 			</fieldset>
 
+			<!-- Keep-Alive Toggle -->
+			<div class="asae-ci-field">
+				<label class="asae-ci-toggle-label" for="asae-ci-keep-alive">
+					<input type="checkbox" id="asae-ci-keep-alive" />
+					<?php esc_html_e( 'Keep session alive during run', 'asae-content-ingestor' ); ?>
+				</label>
+				<p class="description" id="asae-ci-keep-alive-hint">
+					<?php esc_html_e( 'Prevents screen sleep and session timeout during long ingestion runs. Recommended for large imports (1,000+ items).', 'asae-content-ingestor' ); ?>
+				</p>
+				<span id="asae-ci-keep-alive-status" class="asae-ci-keep-alive-status"></span>
+			</div>
+
 			<!-- Submit -->
 			<div class="asae-ci-field asae-ci-submit-row">
 				<?php wp_nonce_field( ASAE_CI_Admin::NONCE_ACTION, '_wpnonce', true ); ?>
@@ -250,6 +262,26 @@ if ( ! current_user_can( 'manage_options' ) ) {
 
 		</form>
 	</section>
+
+	<!-- ── Resume / Cancel Banner (shown when a running job is detected) ── -->
+	<div
+		id="asae-ci-resume-banner"
+		class="asae-ci-card asae-ci-resume-banner asae-ci-hidden"
+		role="alert"
+	>
+		<p id="asae-ci-resume-text">
+			<strong><?php esc_html_e( 'A running job was found.', 'asae-content-ingestor' ); ?></strong>
+			<span id="asae-ci-resume-detail"></span>
+		</p>
+		<div class="asae-ci-resume-actions">
+			<button type="button" id="asae-ci-resume-btn" class="button button-primary">
+				<?php esc_html_e( 'Resume', 'asae-content-ingestor' ); ?>
+			</button>
+			<button type="button" id="asae-ci-cancel-btn" class="button">
+				<?php esc_html_e( 'Cancel Job', 'asae-content-ingestor' ); ?>
+			</button>
+		</div>
+	</div>
 
 	<!-- ── Progress Panel (shown during a job run) ────────────────────────── -->
 	<section

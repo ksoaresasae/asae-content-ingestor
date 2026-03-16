@@ -58,6 +58,7 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_fetch_review_page',     [ __CLASS__, 'ajax_fetch_review_page' ] );
 		add_action( 'wp_ajax_asae_ci_apply_category_to_all', [ __CLASS__, 'ajax_apply_category_to_all' ] );
 		add_action( 'wp_ajax_asae_ci_clear_redirects',       [ __CLASS__, 'ajax_clear_redirects' ] );
+		add_action( 'wp_ajax_asae_ci_cancel_job',            [ __CLASS__, 'ajax_cancel_job' ] );
 
 		// YouTube Feed tab.
 		add_action( 'wp_ajax_asae_ci_save_youtube_key',        [ __CLASS__, 'ajax_save_youtube_key' ] );
@@ -353,6 +354,51 @@ class ASAE_CI_Admin {
 			'dry_results'     => 'dry' === $job['run_type'] ? ( $queue_data['dry_results'] ?? [] ) : [],
 			'is_complete'     => in_array( $job['status'], [ 'completed', 'failed' ], true ),
 		] );
+	}
+
+	/**
+	 * AJAX: Cancels a running job, marking it as completed at its current point.
+	 * Expects POST params: job_key, nonce.
+	 *
+	 * @return void
+	 */
+	public static function ajax_cancel_job(): void {
+		self::verify_ajax_nonce();
+		self::verify_admin_capability();
+
+		$job_key = sanitize_text_field( wp_unslash( $_POST['job_key'] ?? '' ) );
+		if ( empty( $job_key ) ) {
+			wp_send_json_error( [ 'message' => __( 'Job key is required.', 'asae-content-ingestor' ) ] );
+		}
+
+		$job = ASAE_CI_Scheduler::get_job( $job_key );
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
+		}
+
+		if ( 'running' !== $job['status'] ) {
+			wp_send_json_success( [ 'message' => __( 'Job is already stopped.', 'asae-content-ingestor' ) ] );
+			return;
+		}
+
+		// Mark job as completed at its current progress.
+		ASAE_CI_Scheduler::update_job( $job_key, [ 'status' => 'completed' ] );
+
+		// Finalise the associated report with current counts.
+		if ( $job['report_id'] ) {
+			$queue_data = json_decode( $job['queue_data'], true );
+			$ingest     = $queue_data['ingestion'] ?? [];
+			ASAE_CI_Reports::update_report( (int) $job['report_id'], [
+				'status'         => 'completed',
+				'total_ingested' => (int) ( $ingest['processed'] ?? 0 ),
+				'total_failed'   => (int) ( $ingest['failed']    ?? 0 ),
+			] );
+		}
+
+		// Clear any scheduled cron events for this job.
+		wp_clear_scheduled_hook( ASAE_CI_CRON_HOOK, [ $job_key ] );
+
+		wp_send_json_success( [ 'message' => __( 'Job cancelled.', 'asae-content-ingestor' ) ] );
 	}
 
 	/**

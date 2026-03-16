@@ -75,17 +75,132 @@
 		}
 	} )();
 
-	// ── Auto-Resume Running Job ──────────────────────────────────────────────
+	// ── Resume / Cancel Banner for Running Jobs ─────────────────────────────
 	// If the server detected a job still in 'running' status (e.g. after a
-	// session timeout or page reload), auto-resume the polling loop so the
-	// admin doesn't have to restart the entire run.
+	// session timeout or page reload), show a banner giving the admin the
+	// choice to resume or cancel the job.
+
+	var $resumeBanner = $( '#asae-ci-resume-banner' );
+	var $resumeBtn    = $( '#asae-ci-resume-btn' );
+	var $cancelBtn    = $( '#asae-ci-cancel-btn' );
+	var $resumeDetail = $( '#asae-ci-resume-detail' );
 
 	if ( asaeCi.runningJobKey ) {
+		$resumeDetail.text( ' Job key: ' + asaeCi.runningJobKey );
+		$resumeBanner.removeClass( 'asae-ci-hidden' );
+	}
+
+	$resumeBtn.on( 'click', function () {
+		$resumeBanner.addClass( 'asae-ci-hidden' );
 		currentJobKey = asaeCi.runningJobKey;
 		$progressPanel.removeClass( 'asae-ci-hidden' );
 		setSubmitBusy( true );
 		updatePhaseLabel( 'ingesting' );
 		startPollingLoop();
+	} );
+
+	$cancelBtn.on( 'click', function () {
+		$cancelBtn.prop( 'disabled', true ).text( 'Cancelling…' );
+		$.ajax( {
+			url    : asaeCi.ajaxUrl,
+			method : 'POST',
+			data   : {
+				action  : 'asae_ci_cancel_job',
+				nonce   : asaeCi.nonce,
+				job_key : asaeCi.runningJobKey,
+			},
+		} )
+		.done( function ( response ) {
+			$resumeBanner.addClass( 'asae-ci-hidden' );
+			if ( response.success ) {
+				showFormError( '' );
+				$formError.css( 'color', '#1d7444' ).text( 'Job cancelled successfully.' );
+			} else {
+				showFormError( response.data && response.data.message ? response.data.message : 'Could not cancel job.' );
+			}
+		} )
+		.fail( function () {
+			showFormError( 'Network error while cancelling job.' );
+		} )
+		.always( function () {
+			$cancelBtn.prop( 'disabled', false ).text( 'Cancel Job' );
+		} );
+	} );
+
+	// ── Keep-Alive Toggle ────────────────────────────────────────────────────
+	// Uses the Screen Wake Lock API to prevent the screen from sleeping and
+	// fires a lightweight heartbeat request to keep the WP session alive.
+
+	var $keepAlive       = $( '#asae-ci-keep-alive' );
+	var $keepAliveStatus = $( '#asae-ci-keep-alive-status' );
+	var wakeLock         = null;
+	var heartbeatTimer   = null;
+
+	$keepAlive.on( 'change', function () {
+		if ( this.checked ) {
+			activateKeepAlive();
+		} else {
+			deactivateKeepAlive();
+		}
+	} );
+
+	function activateKeepAlive() {
+		// Screen Wake Lock (prevents display sleep).
+		if ( 'wakeLock' in navigator ) {
+			navigator.wakeLock.request( 'screen' ).then( function ( lock ) {
+				wakeLock = lock;
+				wakeLock.addEventListener( 'release', function () {
+					wakeLock = null;
+					updateKeepAliveStatus();
+				} );
+				updateKeepAliveStatus();
+			} ).catch( function () {
+				updateKeepAliveStatus();
+			} );
+		}
+
+		// WP session heartbeat — ping every 60 seconds to refresh the session.
+		if ( ! heartbeatTimer ) {
+			heartbeatTimer = setInterval( function () {
+				$.post( asaeCi.ajaxUrl, {
+					action : 'heartbeat',
+					_nonce : asaeCi.nonce,
+					data   : {},
+				} );
+			}, 60000 );
+		}
+		updateKeepAliveStatus();
+	}
+
+	function deactivateKeepAlive() {
+		if ( wakeLock ) {
+			wakeLock.release();
+			wakeLock = null;
+		}
+		if ( heartbeatTimer ) {
+			clearInterval( heartbeatTimer );
+			heartbeatTimer = null;
+		}
+		updateKeepAliveStatus();
+	}
+
+	function updateKeepAliveStatus() {
+		if ( ! $keepAlive.is( ':checked' ) ) {
+			$keepAliveStatus.text( '' );
+			return;
+		}
+		var parts = [];
+		if ( wakeLock ) {
+			parts.push( 'screen lock active' );
+		} else if ( 'wakeLock' in navigator ) {
+			parts.push( 'screen lock unavailable' );
+		} else {
+			parts.push( 'screen lock not supported' );
+		}
+		if ( heartbeatTimer ) {
+			parts.push( 'session heartbeat active' );
+		}
+		$keepAliveStatus.text( parts.join( ', ' ) );
 	}
 
 	// ── Form Submission ──────────────────────────────────────────────────────
