@@ -439,8 +439,8 @@ class ASAE_CI_Admin {
 
 	/**
 	 * AJAX: Applies manually selected categories to draft posts that had no automatic match.
-	 * On success, publishes the posts and removes them from the pending_review queue.
-	 * If all pending items are resolved the job status is set to 'completed'.
+	 * On success, publishes the posts and clears their _asae_ci_needs_category meta.
+	 * If no pending items remain the job status is set to 'completed'.
 	 *
 	 * Expects POST params: job_key, assignments (JSON array of {post_id, term_id}), nonce.
 	 *
@@ -462,24 +462,10 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
 		}
 
-		$queue_data     = json_decode( $job['queue_data'], true );
-		$pending_review = $queue_data['pending_review'] ?? [];
-		$post_type      = $job['post_type'] ?? 'post';
+		$post_type = $job['post_type'] ?? 'post';
+		$tax       = self::get_category_taxonomy( $post_type );
 
-		// Determine the category taxonomy for this post type.
-		$tax = 'post' === $post_type ? 'category' : '';
-		if ( ! $tax ) {
-			$taxons = get_object_taxonomies( $post_type, 'objects' );
-			foreach ( $taxons as $t ) {
-				if ( $t->hierarchical ) {
-					$tax = $t->name;
-					break;
-				}
-			}
-		}
-
-		// Apply each assignment: set category, publish the draft, remove from pending list.
-		$resolved_ids = [];
+		// Apply each assignment: set category, publish the draft, clear meta flag.
 		foreach ( $assignments as $assignment ) {
 			$post_id = (int) ( $assignment['post_id'] ?? 0 );
 			$term_id = (int) ( $assignment['term_id'] ?? 0 );
@@ -491,45 +477,37 @@ class ASAE_CI_Admin {
 			wp_set_object_terms( $post_id, [ $term_id ], $tax, false );
 			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
 			delete_post_meta( $post_id, '_asae_ci_needs_category' );
-			$resolved_ids[] = $post_id;
 		}
 
-		// Remove resolved items from pending_review.
-		$queue_data['pending_review'] = array_values( array_filter(
-			$pending_review,
-			static function ( $item ) use ( $resolved_ids ) {
-				return ! in_array( (int) $item['post_id'], $resolved_ids, true );
-			}
-		) );
+		// Check if any pending items remain (direct meta query — avoids loading queue_data).
+		$remaining = self::count_pending_review_posts( $post_type );
 
-		// If all resolved, mark job as completed.
-		if ( empty( $queue_data['pending_review'] ) ) {
-			ASAE_CI_Scheduler::update_job( $job_key, [
-				'status'     => 'completed',
-				'queue_data' => wp_json_encode( $queue_data ),
-			] );
+		if ( 0 === $remaining ) {
+			ASAE_CI_Scheduler::update_job( $job_key, [ 'status' => 'completed' ] );
 			if ( $job['report_id'] ) {
 				ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'completed' ] );
 			}
-		} else {
-			ASAE_CI_Scheduler::update_job( $job_key, [
-				'queue_data' => wp_json_encode( $queue_data ),
-			] );
 		}
 
-		// Return updated progress snapshot.
-		$updated_job = ASAE_CI_Scheduler::get_job( $job_key );
-		$result      = $updated_job
-			? ASAE_CI_Scheduler::build_progress_response( $updated_job, $queue_data )
-			: [ 'is_complete' => true ];
-
-		wp_send_json_success( $result );
+		// Return a lightweight progress snapshot (no queue_data decode needed).
+		wp_send_json_success( [
+			'job_key'              => $job['job_key'],
+			'status'               => 0 === $remaining ? 'completed' : $job['status'],
+			'pending_review_total' => $remaining,
+			'is_needs_review'      => $remaining > 0,
+			'is_complete'          => 0 === $remaining,
+			'run_type'             => $job['run_type'],
+			'report_id'            => $job['report_id'],
+		] );
 	}
 
 	// ── Paginated Category Review ────────────────────────────────────────────
 
 	/**
 	 * Returns a single page of pending review items for the category review UI.
+	 *
+	 * Queries posts with _asae_ci_needs_category meta directly (no queue_data
+	 * decode needed), which keeps memory usage constant regardless of job size.
 	 *
 	 * Accepts: job_key, page (default 1), per_page (default 100), search (optional).
 	 * Returns: { items: [...], total: N, page: N, pages: N, categories: [...] }
@@ -554,38 +532,42 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
 		}
 
-		$queue_data     = json_decode( $job['queue_data'], true );
-		$pending_review = $queue_data['pending_review'] ?? [];
+		$post_type = $job['post_type'] ?? 'post';
 
-		// Filter by search term (case-insensitive substring on post_title).
+		// Query posts with the needs-category meta flag directly from the DB.
+		$query_args = [
+			'post_type'      => $post_type,
+			'post_status'    => 'draft',
+			'posts_per_page' => $per_page,
+			'paged'          => $page,
+			'orderby'        => 'ID',
+			'order'          => 'ASC',
+			'meta_key'       => '_asae_ci_needs_category',
+			'meta_value'     => '1',
+			'fields'         => 'ids',
+		];
+
 		if ( '' !== $search ) {
-			$search_lower   = mb_strtolower( $search );
-			$pending_review = array_values( array_filter(
-				$pending_review,
-				static function ( $item ) use ( $search_lower ) {
-					return false !== mb_strpos( mb_strtolower( $item['post_title'] ?? '' ), $search_lower );
-				}
-			) );
+			$query_args['s'] = $search;
 		}
 
-		$total = count( $pending_review );
-		$pages = max( 1, (int) ceil( $total / $per_page ) );
+		$query = new \WP_Query( $query_args );
+		$total = (int) $query->found_posts;
+		$pages = max( 1, (int) $query->max_num_pages );
 		$page  = min( $page, $pages );
 
-		$items = array_slice( $pending_review, ( $page - 1 ) * $per_page, $per_page );
+		$items = [];
+		foreach ( $query->posts as $post_id ) {
+			$post = get_post( $post_id );
+			$items[] = [
+				'post_id'    => $post_id,
+				'post_title' => $post ? $post->post_title : '',
+				'source_url' => get_post_meta( $post_id, '_asae_ci_source_url', true ) ?: '',
+			];
+		}
 
 		// Build category list.
-		$post_type = $job['post_type'] ?? 'post';
-		$tax       = 'post' === $post_type ? 'category' : '';
-		if ( ! $tax ) {
-			$taxons = get_object_taxonomies( $post_type, 'objects' );
-			foreach ( $taxons as $t ) {
-				if ( $t->hierarchical ) {
-					$tax = $t->name;
-					break;
-				}
-			}
-		}
+		$tax        = self::get_category_taxonomy( $post_type );
 		$categories = [];
 		if ( $tax ) {
 			$terms = get_terms( [ 'taxonomy' => $tax, 'hide_empty' => false ] );
@@ -608,8 +590,9 @@ class ASAE_CI_Admin {
 	/**
 	 * Applies a single category to a batch of pending review items.
 	 *
-	 * Processes up to 50 items per call to stay within PHP time limits.
-	 * The JS client calls this repeatedly until `remaining` reaches 0.
+	 * Queries posts with _asae_ci_needs_category meta directly (no queue_data
+	 * decode needed). Processes up to 50 items per call to stay within PHP time
+	 * limits. The JS client calls this repeatedly until `remaining` reaches 0.
 	 *
 	 * Returns: { applied: N, remaining: N, total: N, status: 'processing'|'completed' }
 	 *
@@ -631,70 +614,94 @@ class ASAE_CI_Admin {
 			wp_send_json_error( [ 'message' => __( 'Job not found.', 'asae-content-ingestor' ) ] );
 		}
 
-		$queue_data     = json_decode( $job['queue_data'], true );
-		$pending_review = $queue_data['pending_review'] ?? [];
-		$post_type      = $job['post_type'] ?? 'post';
-		$total_start    = count( $pending_review );
-
-		// Determine taxonomy.
-		$tax = 'post' === $post_type ? 'category' : '';
-		if ( ! $tax ) {
-			$taxons = get_object_taxonomies( $post_type, 'objects' );
-			foreach ( $taxons as $t ) {
-				if ( $t->hierarchical ) {
-					$tax = $t->name;
-					break;
-				}
-			}
-		}
+		$post_type = $job['post_type'] ?? 'post';
+		$tax       = self::get_category_taxonomy( $post_type );
 
 		if ( ! $tax ) {
 			wp_send_json_error( [ 'message' => __( 'No category taxonomy found.', 'asae-content-ingestor' ) ] );
 		}
 
-		// Process up to 50 items per request.
+		// Fetch a batch of post IDs directly from meta (avoids loading queue_data).
 		$batch_size = 50;
-		$batch      = array_splice( $pending_review, 0, $batch_size );
-		$applied    = 0;
+		$post_ids   = get_posts( [
+			'post_type'      => $post_type,
+			'post_status'    => 'draft',
+			'posts_per_page' => $batch_size,
+			'meta_key'       => '_asae_ci_needs_category',
+			'meta_value'     => '1',
+			'fields'         => 'ids',
+			'orderby'        => 'ID',
+			'order'          => 'ASC',
+		] );
 
-		foreach ( $batch as $item ) {
-			$post_id = (int) ( $item['post_id'] ?? 0 );
-			if ( $post_id <= 0 ) {
-				continue;
-			}
-
+		$applied = 0;
+		foreach ( $post_ids as $post_id ) {
 			wp_set_object_terms( $post_id, [ $term_id ], $tax, false );
 			wp_update_post( [ 'ID' => $post_id, 'post_status' => 'publish' ] );
 			delete_post_meta( $post_id, '_asae_ci_needs_category' );
 			$applied++;
 		}
 
-		$remaining = count( $pending_review );
-
-		// Save updated pending_review (with processed items removed).
-		$queue_data['pending_review'] = array_values( $pending_review );
+		$remaining = self::count_pending_review_posts( $post_type );
 
 		if ( 0 === $remaining ) {
-			// All done — mark job completed.
-			ASAE_CI_Scheduler::update_job( $job_key, [
-				'status'     => 'completed',
-				'queue_data' => wp_json_encode( $queue_data ),
-			] );
+			ASAE_CI_Scheduler::update_job( $job_key, [ 'status' => 'completed' ] );
 			if ( $job['report_id'] ) {
 				ASAE_CI_Reports::update_report( (int) $job['report_id'], [ 'status' => 'completed' ] );
 			}
-		} else {
-			ASAE_CI_Scheduler::update_job( $job_key, [
-				'queue_data' => wp_json_encode( $queue_data ),
-			] );
 		}
 
 		wp_send_json_success( [
 			'applied'   => $applied,
 			'remaining' => $remaining,
-			'total'     => $total_start,
+			'total'     => $applied + $remaining,
 			'status'    => 0 === $remaining ? 'completed' : 'processing',
 		] );
+	}
+
+	// ── Review Helper Methods ────────────────────────────────────────────────
+
+	/**
+	 * Returns the hierarchical taxonomy name for a given post type.
+	 *
+	 * @param string $post_type WP post type slug.
+	 * @return string Taxonomy name, or empty string if none found.
+	 */
+	private static function get_category_taxonomy( string $post_type ): string {
+		if ( 'post' === $post_type ) {
+			return 'category';
+		}
+		$taxons = get_object_taxonomies( $post_type, 'objects' );
+		foreach ( $taxons as $t ) {
+			if ( $t->hierarchical ) {
+				return $t->name;
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Counts posts with the _asae_ci_needs_category meta flag.
+	 *
+	 * Uses a direct DB query for speed on large datasets.
+	 *
+	 * @param string $post_type WP post type slug.
+	 * @return int Number of draft posts awaiting category assignment.
+	 */
+	private static function count_pending_review_posts( string $post_type ): int {
+		global $wpdb;
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		return (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_type = %s
+			   AND p.post_status = 'draft'
+			   AND pm.meta_key = '_asae_ci_needs_category'
+			   AND pm.meta_value = '1'",
+			$post_type
+		) );
+		// phpcs:enable WordPress.DB.DirectDatabaseQuery
 	}
 
 	// ── Redirect Data Management ─────────────────────────────────────────────
