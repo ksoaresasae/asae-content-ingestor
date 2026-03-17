@@ -42,6 +42,10 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		   class="nav-tab">
 			<?php esc_html_e( 'WordPress REST API', 'asae-content-ingestor' ); ?>
 		</a>
+		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=cleanup' ) ); ?>"
+		   class="nav-tab">
+			<?php esc_html_e( 'Clean Up', 'asae-content-ingestor' ); ?>
+		</a>
 	</nav>
 
 	<?php if ( ! $cap_active && ! $cap_notice_dismissed ) : ?>

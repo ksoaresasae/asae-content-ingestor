@@ -785,3 +785,26 @@ fieldset.asae-ci-field legend {
 	font-style: italic;
 	color: #646970;
 }
+
+/* ── Clean Up Tab ─────────────────────────────────────────────────────────── */
+
+.asae-ci-panel {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	padding: 1.25rem 1.5rem;
+	margin-top: 1.25rem;
+}
+
+.asae-ci-panel h2 {
+	margin-top: 0;
+}
+
+#asae-ci-dates-log {
+	margin-top: 1rem;
+}
+
+#asae-ci-dates-log td,
+#asae-ci-dates-log th {
+	padding: .5rem .75rem;
+}

@@ -1623,4 +1623,199 @@
 		} );
 	}
 
+	// ── Clean Up Tab ──────────────────────────────────────────────────────────
+
+	if ( $( '#asae-ci-cleanup-app' ).length ) {
+
+		// Helper to escape HTML in strings.
+		function escHtmlCleanup( s ) {
+			var el = document.createElement( 'span' );
+			el.textContent = s || '';
+			return el.innerHTML;
+		}
+
+		// ── Cancel All Pending Jobs ──────────────────────────────────────────
+
+		$( '#asae-ci-cancel-all-jobs-btn' ).on( 'click', function () {
+			if ( ! confirm( 'Are you sure you want to cancel ALL pending, running, and failed jobs? This cannot be undone.' ) ) {
+				return;
+			}
+
+			var $btn    = $( this ).prop( 'disabled', true );
+			var $result = $( '#asae-ci-cancel-all-jobs-result' );
+
+			$.post( asaeCi.ajaxUrl, {
+				action: 'asae_ci_cancel_all_jobs',
+				nonce:  asaeCi.nonce,
+			} ).done( function ( resp ) {
+				if ( resp.success ) {
+					$result.html( '<div class="notice notice-success inline"><p>' + resp.data.cancelled + ' job(s) cancelled.</p></div>' )
+						.removeClass( 'asae-ci-hidden' );
+				} else {
+					$result.html( '<div class="notice notice-error inline"><p>' + escHtmlCleanup( resp.data ) + '</p></div>' )
+						.removeClass( 'asae-ci-hidden' );
+				}
+				$btn.prop( 'disabled', false );
+			} ).fail( function () {
+				$result.html( '<div class="notice notice-error inline"><p>Request failed.</p></div>' )
+					.removeClass( 'asae-ci-hidden' );
+				$btn.prop( 'disabled', false );
+			} );
+		} );
+
+		// ── Publish All Drafts ───────────────────────────────────────────────
+
+		$( '#asae-ci-publish-all-btn' ).on( 'click', function () {
+			if ( ! confirm( 'WARNING: This will publish ALL draft posts created by the Content Ingestor. This may be thousands of posts. Are you sure?' ) ) {
+				return;
+			}
+			if ( ! confirm( 'Final confirmation: This action is difficult to reverse. Proceed?' ) ) {
+				return;
+			}
+
+			var $btn      = $( this ).prop( 'disabled', true );
+			var $progress = $( '#asae-ci-publish-progress' ).removeClass( 'asae-ci-hidden' );
+			var $bar      = $( '#asae-ci-publish-bar' );
+			var $status   = $( '#asae-ci-publish-status' );
+			var $result   = $( '#asae-ci-publish-result' );
+			var totalPublished = 0;
+
+			function publishBatch() {
+				$.post( asaeCi.ajaxUrl, {
+					action: 'asae_ci_publish_all_drafts',
+					nonce:  asaeCi.nonce,
+				} ).done( function ( resp ) {
+					if ( ! resp.success ) {
+						$result.html( '<div class="notice notice-error inline"><p>' + escHtmlCleanup( resp.data ) + '</p></div>' )
+							.removeClass( 'asae-ci-hidden' );
+						$btn.prop( 'disabled', false );
+						return;
+					}
+
+					totalPublished += resp.data.published;
+					var remaining   = resp.data.remaining;
+					var total       = totalPublished + remaining;
+					var pct         = total > 0 ? Math.round( ( totalPublished / total ) * 100 ) : 100;
+
+					$bar.css( 'width', pct + '%' );
+					$status.text( 'Published ' + totalPublished.toLocaleString() + ' of ' + total.toLocaleString() + ' drafts…' );
+
+					if ( remaining > 0 && resp.data.published > 0 ) {
+						publishBatch();
+					} else {
+						$progress.addClass( 'asae-ci-hidden' );
+						$result.html( '<div class="notice notice-success inline"><p>Done! ' + totalPublished.toLocaleString() + ' post(s) published.</p></div>' )
+							.removeClass( 'asae-ci-hidden' );
+						$btn.prop( 'disabled', false );
+					}
+				} ).fail( function () {
+					$status.text( 'Network error after ' + totalPublished.toLocaleString() + ' items. Click the button again to resume.' );
+					$btn.prop( 'disabled', false );
+				} );
+			}
+
+			publishBatch();
+		} );
+
+		// ── Check Publish Dates ──────────────────────────────────────────────
+
+		$( '#asae-ci-check-dates-btn' ).on( 'click', function () {
+			var dateFrom = $( '#asae-ci-dates-from' ).val();
+			var dateTo   = $( '#asae-ci-dates-to' ).val();
+
+			if ( ! dateFrom || ! dateTo ) {
+				alert( 'Please enter both a From and To date.' );
+				return;
+			}
+
+			if ( ! confirm( 'This will fetch each external source URL in the date range and compare publish dates. Posts with different dates will be updated. Continue?' ) ) {
+				return;
+			}
+
+			var $btn      = $( this ).prop( 'disabled', true );
+			var $progress = $( '#asae-ci-dates-progress' ).removeClass( 'asae-ci-hidden' );
+			var $bar      = $( '#asae-ci-dates-bar' );
+			var $status   = $( '#asae-ci-dates-status' );
+			var $result   = $( '#asae-ci-dates-result' );
+			var $log      = $( '#asae-ci-dates-log' ).removeClass( 'asae-ci-hidden' );
+			var $logBody  = $( '#asae-ci-dates-log-body' ).empty();
+
+			var offset       = 0;
+			var totalChecked = 0;
+			var totalUpdated = 0;
+			var totalErrors  = 0;
+			var grandTotal   = 0;
+
+			function checkBatch() {
+				$.post( asaeCi.ajaxUrl, {
+					action:    'asae_ci_check_publish_dates',
+					nonce:     asaeCi.nonce,
+					date_from: dateFrom,
+					date_to:   dateTo,
+					offset:    offset,
+				} ).done( function ( resp ) {
+					if ( ! resp.success ) {
+						$result.html( '<div class="notice notice-error inline"><p>' + escHtmlCleanup( resp.data ) + '</p></div>' )
+							.removeClass( 'asae-ci-hidden' );
+						$btn.prop( 'disabled', false );
+						return;
+					}
+
+					var d = resp.data;
+					grandTotal    = d.total;
+					totalChecked += d.checked;
+					totalUpdated += d.updated;
+					totalErrors  += d.errors;
+					offset        = d.offset;
+
+					var pct = grandTotal > 0 ? Math.round( ( totalChecked / grandTotal ) * 100 ) : 100;
+					$bar.css( 'width', pct + '%' );
+					$status.text( 'Checked ' + totalChecked.toLocaleString() + ' of ' + grandTotal.toLocaleString() + ' posts…' );
+
+					// Append detail rows.
+					$.each( d.details, function ( _, item ) {
+						var statusLabel = '';
+						if ( item.status === 'updated' ) {
+							statusLabel = '<span style="color:#00a32a;font-weight:600;">Updated</span>';
+						} else if ( item.status === 'match' ) {
+							statusLabel = '<span style="color:#666;">Match</span>';
+						} else if ( item.status === 'fetch_error' ) {
+							statusLabel = '<span style="color:#d63638;">Fetch Error</span>';
+						} else if ( item.status === 'no_date' ) {
+							statusLabel = '<span style="color:#dba617;">No Date Found</span>';
+						}
+
+						$logBody.append(
+							'<tr>' +
+								'<td>' + item.post_id + '</td>' +
+								'<td>' + escHtmlCleanup( item.title ) + '</td>' +
+								'<td>' + statusLabel + '</td>' +
+								'<td>' + escHtmlCleanup( item.old_date || '—' ) + '</td>' +
+								'<td>' + escHtmlCleanup( item.new_date || '—' ) + '</td>' +
+							'</tr>'
+						);
+					} );
+
+					if ( ! d.done ) {
+						checkBatch();
+					} else {
+						$progress.addClass( 'asae-ci-hidden' );
+						$result.html(
+							'<div class="notice notice-success inline"><p>Done! Checked ' +
+							totalChecked.toLocaleString() + ' posts. ' +
+							totalUpdated.toLocaleString() + ' updated, ' +
+							totalErrors.toLocaleString() + ' errors.</p></div>'
+						).removeClass( 'asae-ci-hidden' );
+						$btn.prop( 'disabled', false );
+					}
+				} ).fail( function () {
+					$status.text( 'Network error after ' + totalChecked.toLocaleString() + ' posts. Click again to resume from where it stopped.' );
+					$btn.prop( 'disabled', false );
+				} );
+			}
+
+			checkBatch();
+		} );
+	}
+
 } )( jQuery );

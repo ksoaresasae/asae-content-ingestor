@@ -70,6 +70,11 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_wp_rest_generate_feed',     [ __CLASS__, 'ajax_wp_rest_generate_feed' ] );
 		add_action( 'wp_ajax_asae_ci_wp_rest_clear_creds',       [ __CLASS__, 'ajax_wp_rest_clear_creds' ] );
 		add_action( 'wp_ajax_asae_ci_wp_rest_feed_status',       [ __CLASS__, 'ajax_wp_rest_feed_status' ] );
+
+		// Clean Up tab.
+		add_action( 'wp_ajax_asae_ci_cancel_all_jobs',       [ __CLASS__, 'ajax_cancel_all_jobs' ] );
+		add_action( 'wp_ajax_asae_ci_publish_all_drafts',    [ __CLASS__, 'ajax_publish_all_drafts' ] );
+		add_action( 'wp_ajax_asae_ci_check_publish_dates',   [ __CLASS__, 'ajax_check_publish_dates' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -180,7 +185,7 @@ class ASAE_CI_Admin {
 		}
 
 		$active_tab = sanitize_key( $_GET['tab'] ?? 'run' );
-		if ( ! in_array( $active_tab, [ 'run', 'reports', 'youtube', 'wp-rest' ], true ) ) {
+		if ( ! in_array( $active_tab, [ 'run', 'reports', 'youtube', 'wp-rest', 'cleanup' ], true ) ) {
 			$active_tab = 'run';
 		}
 
@@ -216,6 +221,9 @@ class ASAE_CI_Admin {
 			$wp_rest_has_creds   = ASAE_CI_WP_REST::has_credentials();
 			$wp_rest_site_url    = get_option( ASAE_CI_WP_REST::OPTION_SITE_URL, '' );
 			$view                = ASAE_CI_PATH . 'admin/views/page-wp-rest.php';
+		} elseif ( 'cleanup' === $active_tab ) {
+			// Clean Up tab.
+			$view = ASAE_CI_PATH . 'admin/views/page-cleanup.php';
 		} else {
 			// Run tab (default).
 			$active_tab           = 'run';
@@ -1194,5 +1202,208 @@ class ASAE_CI_Admin {
 		}
 
 		wp_send_json_success( ASAE_CI_WP_REST::get_feed_status() );
+	}
+
+	// ── Clean Up Tab AJAX Handlers ───────────────────────────────────────────
+
+	/**
+	 * AJAX: Cancel all non-completed jobs.
+	 * Sets every pending/running/needs_review/failed job to 'completed'.
+	 */
+	public static function ajax_cancel_all_jobs(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		global $wpdb;
+		$table = $wpdb->prefix . 'asae_ci_jobs';
+
+		$affected = $wpdb->query(
+			"UPDATE {$table} SET status = 'completed' WHERE status IN ('pending', 'running', 'needs_review', 'failed')"
+		);
+
+		// Clear any scheduled cron events.
+		wp_clear_scheduled_hook( ASAE_CI_CRON_HOOK );
+
+		wp_send_json_success( [
+			'cancelled' => (int) $affected,
+		] );
+	}
+
+	/**
+	 * AJAX: Publish a batch of draft posts.
+	 * Processes up to 50 drafts per call. Returns the remaining count so JS can loop.
+	 */
+	public static function ajax_publish_all_drafts(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$batch_size = 50;
+
+		$draft_ids = get_posts( [
+			'post_type'      => 'any',
+			'post_status'    => 'draft',
+			'posts_per_page' => $batch_size,
+			'fields'         => 'ids',
+			'meta_key'       => '_asae_ci_source_url',
+			'orderby'        => 'ID',
+			'order'          => 'ASC',
+		] );
+
+		$published = 0;
+		foreach ( $draft_ids as $post_id ) {
+			wp_update_post( [
+				'ID'          => (int) $post_id,
+				'post_status' => 'publish',
+			] );
+			// Clear the needs-category flag if present so it doesn't linger.
+			delete_post_meta( (int) $post_id, '_asae_ci_needs_category' );
+			$published++;
+		}
+
+		// Count remaining drafts with our source meta.
+		global $wpdb;
+		$remaining = (int) $wpdb->get_var(
+			"SELECT COUNT(*) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_status = 'draft'
+			   AND pm.meta_key = '_asae_ci_source_url'"
+		);
+
+		wp_send_json_success( [
+			'published' => $published,
+			'remaining' => $remaining,
+		] );
+	}
+
+	/**
+	 * AJAX: Check publish dates for a batch of posts against their external sources.
+	 *
+	 * Accepts: date_from, date_to (Y-m-d), offset (int).
+	 * Fetches up to 5 posts per call, parses each source URL for its date,
+	 * and updates the WP post_date if different.
+	 */
+	public static function ajax_check_publish_dates(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$date_from = sanitize_text_field( $_POST['date_from'] ?? '' );
+		$date_to   = sanitize_text_field( $_POST['date_to'] ?? '' );
+		$offset    = max( 0, (int) ( $_POST['offset'] ?? 0 ) );
+		$batch     = 5; // Small batch — each requires an HTTP fetch + parse.
+
+		if ( ! $date_from || ! $date_to ) {
+			wp_send_json_error( 'Date range required.' );
+		}
+
+		// Count total posts in range (on first call only, offset === 0).
+		global $wpdb;
+		$total = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_status = 'publish'
+			   AND pm.meta_key = '_asae_ci_source_url'
+			   AND p.post_date >= %s
+			   AND p.post_date < %s",
+			$date_from . ' 00:00:00',
+			$date_to . ' 23:59:59'
+		) );
+
+		// Fetch the batch.
+		$posts = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID, p.post_date, pm.meta_value AS source_url
+			 FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_status = 'publish'
+			   AND pm.meta_key = '_asae_ci_source_url'
+			   AND p.post_date >= %s
+			   AND p.post_date < %s
+			 ORDER BY p.ID ASC
+			 LIMIT %d OFFSET %d",
+			$date_from . ' 00:00:00',
+			$date_to . ' 23:59:59',
+			$batch,
+			$offset
+		) );
+
+		$checked = 0;
+		$updated = 0;
+		$errors  = 0;
+		$details = [];
+
+		foreach ( $posts as $row ) {
+			$checked++;
+			$source_url = $row->source_url;
+
+			// Fetch the external page.
+			$response = wp_remote_get( $source_url, [
+				'timeout'    => 15,
+				'user-agent' => 'ASAE-Content-Ingestor/' . ASAE_CI_VERSION,
+			] );
+
+			if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+				$errors++;
+				$details[] = [
+					'post_id' => (int) $row->ID,
+					'status'  => 'fetch_error',
+					'title'   => get_the_title( (int) $row->ID ),
+				];
+				continue;
+			}
+
+			$html   = wp_remote_retrieve_body( $response );
+			$parsed = ASAE_CI_Parser::parse( $source_url, $html );
+
+			if ( empty( $parsed['date'] ) ) {
+				$details[] = [
+					'post_id' => (int) $row->ID,
+					'status'  => 'no_date',
+					'title'   => get_the_title( (int) $row->ID ),
+				];
+				continue;
+			}
+
+			$source_date = $parsed['date']; // Y-m-d H:i:s
+			$wp_date     = $row->post_date;
+
+			// Compare dates (ignore seconds — compare down to the minute).
+			if ( substr( $source_date, 0, 16 ) !== substr( $wp_date, 0, 16 ) ) {
+				wp_update_post( [
+					'ID'            => (int) $row->ID,
+					'post_date'     => $source_date,
+					'post_date_gmt' => get_gmt_from_date( $source_date ),
+					'edit_date'     => true,
+				] );
+				$updated++;
+				$details[] = [
+					'post_id'  => (int) $row->ID,
+					'status'   => 'updated',
+					'title'    => get_the_title( (int) $row->ID ),
+					'old_date' => $wp_date,
+					'new_date' => $source_date,
+				];
+			} else {
+				$details[] = [
+					'post_id' => (int) $row->ID,
+					'status'  => 'match',
+					'title'   => get_the_title( (int) $row->ID ),
+				];
+			}
+		}
+
+		wp_send_json_success( [
+			'checked'    => $checked,
+			'updated'    => $updated,
+			'errors'     => $errors,
+			'details'    => $details,
+			'total'      => $total,
+			'offset'     => $offset + $checked,
+			'done'       => ( $offset + $checked ) >= $total,
+		] );
 	}
 }
