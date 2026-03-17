@@ -1233,7 +1233,9 @@ class ASAE_CI_Admin {
 
 	/**
 	 * AJAX: Publish a batch of draft posts.
-	 * Processes up to 50 drafts per call. Returns the remaining count so JS can loop.
+	 * Uses direct $wpdb to avoid expensive wp_update_post hooks (Co-Authors Plus,
+	 * Yoast, Jetpack, etc.) that can cause PHP timeouts on large sites.
+	 * Processes up to 100 drafts per call. Returns the remaining count so JS can loop.
 	 */
 	public static function ajax_publish_all_drafts(): void {
 		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
@@ -1241,31 +1243,38 @@ class ASAE_CI_Admin {
 			wp_send_json_error( 'Permission denied.' );
 		}
 
-		$batch_size = 50;
+		global $wpdb;
+		$batch_size = 100;
 
-		$draft_ids = get_posts( [
-			'post_type'      => 'any',
-			'post_status'    => 'draft',
-			'posts_per_page' => $batch_size,
-			'fields'         => 'ids',
-			'meta_key'       => '_asae_ci_source_url',
-			'orderby'        => 'ID',
-			'order'          => 'ASC',
-		] );
+		// Direct DB query — avoids WP_Query overhead on large sites.
+		$draft_ids = $wpdb->get_col( $wpdb->prepare(
+			"SELECT p.ID FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_status = 'draft'
+			   AND pm.meta_key = '_asae_ci_source_url'
+			 ORDER BY p.ID ASC
+			 LIMIT %d",
+			$batch_size
+		) );
 
 		$published = 0;
 		foreach ( $draft_ids as $post_id ) {
-			wp_update_post( [
-				'ID'          => (int) $post_id,
-				'post_status' => 'publish',
-			] );
-			// Clear the needs-category flag if present so it doesn't linger.
-			delete_post_meta( (int) $post_id, '_asae_ci_needs_category' );
+			$post_id = (int) $post_id;
+			// Direct status update — bypasses all save_post / transition hooks
+			// that cause timeouts on plugin-heavy sites.
+			$wpdb->update(
+				$wpdb->posts,
+				[ 'post_status' => 'publish' ],
+				[ 'ID' => $post_id ],
+				[ '%s' ],
+				[ '%d' ]
+			);
+			delete_post_meta( $post_id, '_asae_ci_needs_category' );
+			clean_post_cache( $post_id );
 			$published++;
 		}
 
 		// Count remaining drafts with our source meta.
-		global $wpdb;
 		$remaining = (int) $wpdb->get_var(
 			"SELECT COUNT(*) FROM {$wpdb->posts} p
 			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
