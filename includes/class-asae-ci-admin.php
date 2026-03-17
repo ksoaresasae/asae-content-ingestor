@@ -1382,17 +1382,40 @@ class ASAE_CI_Admin {
 
 			// Compare dates (ignore seconds — compare down to the minute).
 			if ( substr( $source_date, 0, 16 ) !== substr( $wp_date, 0, 16 ) ) {
+				$post_id = (int) $row->ID;
+
 				wp_update_post( [
-					'ID'            => (int) $row->ID,
+					'ID'            => $post_id,
 					'post_date'     => $source_date,
 					'post_date_gmt' => get_gmt_from_date( $source_date ),
 					'edit_date'     => true,
 				] );
+
+				// Update Redirection plugin target URL — the permalink has changed
+				// because the site uses a date-based permalink structure.
+				$items_table = $wpdb->prefix . 'redirection_items';
+				$table_exists = ( $wpdb->get_var( "SHOW TABLES LIKE '{$items_table}'" ) === $items_table );
+				if ( $table_exists ) {
+					$source_path = (string) parse_url( $source_url, PHP_URL_PATH );
+					if ( $source_path ) {
+						$new_permalink = get_permalink( $post_id );
+						if ( $new_permalink ) {
+							$wpdb->update(
+								$items_table,
+								[ 'action_data' => esc_url_raw( $new_permalink ) ],
+								[ 'url' => $source_path ],
+								[ '%s' ],
+								[ '%s' ]
+							);
+						}
+					}
+				}
+
 				$updated++;
 				$details[] = [
-					'post_id'  => (int) $row->ID,
+					'post_id'  => $post_id,
 					'status'   => 'updated',
-					'title'    => get_the_title( (int) $row->ID ),
+					'title'    => get_the_title( $post_id ),
 					'old_date' => $wp_date,
 					'new_date' => $source_date,
 				];
