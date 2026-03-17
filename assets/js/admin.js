@@ -1816,6 +1816,67 @@
 
 			checkBatch();
 		} );
+
+		// ── Fix Redirects ────────────────────────────────────────────────────
+
+		$( '#asae-ci-fix-redirects-btn' ).on( 'click', function () {
+			if ( ! confirm( 'This will compare every ingested post\'s current permalink against the Redirection plugin target and update any mismatches. Continue?' ) ) {
+				return;
+			}
+
+			var $btn      = $( this ).prop( 'disabled', true );
+			var $progress = $( '#asae-ci-redirects-progress' ).removeClass( 'asae-ci-hidden' );
+			var $bar      = $( '#asae-ci-redirects-bar' );
+			var $status   = $( '#asae-ci-redirects-status' );
+			var $result   = $( '#asae-ci-redirects-result' );
+
+			var offset      = 0;
+			var totalFixed   = 0;
+			var totalChecked = 0;
+			var grandTotal   = 0;
+
+			function fixBatch() {
+				$.post( asaeCi.ajaxUrl, {
+					action: 'asae_ci_fix_redirects',
+					nonce:  asaeCi.nonce,
+					offset: offset,
+				} ).done( function ( resp ) {
+					if ( ! resp.success ) {
+						$result.html( '<div class="notice notice-error inline"><p>' + escHtmlCleanup( resp.data ) + '</p></div>' )
+							.removeClass( 'asae-ci-hidden' );
+						$btn.prop( 'disabled', false );
+						return;
+					}
+
+					var d = resp.data;
+					grandTotal    = d.total;
+					totalChecked += d.checked;
+					totalFixed   += d.fixed;
+					offset        = d.offset;
+
+					var pct = grandTotal > 0 ? Math.round( ( totalChecked / grandTotal ) * 100 ) : 100;
+					$bar.css( 'width', pct + '%' );
+					$status.text( 'Checked ' + totalChecked.toLocaleString() + ' of ' + grandTotal.toLocaleString() + ' posts… (' + totalFixed.toLocaleString() + ' fixed)' );
+
+					if ( ! d.done ) {
+						fixBatch();
+					} else {
+						$progress.addClass( 'asae-ci-hidden' );
+						$result.html(
+							'<div class="notice notice-success inline"><p>Done! Checked ' +
+							totalChecked.toLocaleString() + ' posts. ' +
+							totalFixed.toLocaleString() + ' redirect(s) updated.</p></div>'
+						).removeClass( 'asae-ci-hidden' );
+						$btn.prop( 'disabled', false );
+					}
+				} ).fail( function () {
+					$status.text( 'Network error after ' + totalChecked.toLocaleString() + ' posts. Click again to resume.' );
+					$btn.prop( 'disabled', false );
+				} );
+			}
+
+			fixBatch();
+		} );
 	}
 
 } )( jQuery );

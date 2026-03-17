@@ -75,6 +75,7 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_cancel_all_jobs',       [ __CLASS__, 'ajax_cancel_all_jobs' ] );
 		add_action( 'wp_ajax_asae_ci_publish_all_drafts',    [ __CLASS__, 'ajax_publish_all_drafts' ] );
 		add_action( 'wp_ajax_asae_ci_check_publish_dates',   [ __CLASS__, 'ajax_check_publish_dates' ] );
+		add_action( 'wp_ajax_asae_ci_fix_redirects',         [ __CLASS__, 'ajax_fix_redirects' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -1391,26 +1392,6 @@ class ASAE_CI_Admin {
 					'edit_date'     => true,
 				] );
 
-				// Update Redirection plugin target URL — the permalink has changed
-				// because the site uses a date-based permalink structure.
-				$items_table = $wpdb->prefix . 'redirection_items';
-				$table_exists = ( $wpdb->get_var( "SHOW TABLES LIKE '{$items_table}'" ) === $items_table );
-				if ( $table_exists ) {
-					$source_path = (string) parse_url( $source_url, PHP_URL_PATH );
-					if ( $source_path ) {
-						$new_permalink = get_permalink( $post_id );
-						if ( $new_permalink ) {
-							$wpdb->update(
-								$items_table,
-								[ 'action_data' => esc_url_raw( $new_permalink ) ],
-								[ 'url' => $source_path ],
-								[ '%s' ],
-								[ '%s' ]
-							);
-						}
-					}
-				}
-
 				$updated++;
 				$details[] = [
 					'post_id'  => $post_id,
@@ -1436,6 +1417,107 @@ class ASAE_CI_Admin {
 			'total'      => $total,
 			'offset'     => $offset + $checked,
 			'done'       => ( $offset + $checked ) >= $total,
+		] );
+	}
+
+	/**
+	 * AJAX: Fix redirect target URLs for ingested posts.
+	 *
+	 * Loops through posts with _asae_ci_source_url meta in batches and ensures
+	 * the Redirection plugin's stored target URL matches the current permalink.
+	 * This is needed because date-based permalinks change when publish dates
+	 * are corrected, but can also be run independently at any time.
+	 *
+	 * Accepts: offset (int). Processes 100 posts per call.
+	 */
+	public static function ajax_fix_redirects(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		global $wpdb;
+		$items_table  = $wpdb->prefix . 'redirection_items';
+		$table_exists = ( $wpdb->get_var( "SHOW TABLES LIKE '{$items_table}'" ) === $items_table );
+		if ( ! $table_exists ) {
+			wp_send_json_error( 'Redirection plugin tables not found.' );
+		}
+
+		$offset    = max( 0, (int) ( $_POST['offset'] ?? 0 ) );
+		$batch     = 100;
+
+		// Total posts with source URLs.
+		$total = (int) $wpdb->get_var(
+			"SELECT COUNT(*) FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_status = 'publish'
+			   AND pm.meta_key = '_asae_ci_source_url'"
+		);
+
+		// Fetch the batch.
+		$posts = $wpdb->get_results( $wpdb->prepare(
+			"SELECT p.ID, pm.meta_value AS source_url
+			 FROM {$wpdb->posts} p
+			 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+			 WHERE p.post_status = 'publish'
+			   AND pm.meta_key = '_asae_ci_source_url'
+			 ORDER BY p.ID ASC
+			 LIMIT %d OFFSET %d",
+			$batch,
+			$offset
+		) );
+
+		$checked = 0;
+		$fixed   = 0;
+		$skipped = 0;
+
+		foreach ( $posts as $row ) {
+			$checked++;
+			$post_id     = (int) $row->ID;
+			$source_url  = $row->source_url;
+			$source_path = (string) parse_url( $source_url, PHP_URL_PATH );
+
+			if ( ! $source_path ) {
+				$skipped++;
+				continue;
+			}
+
+			// Look up the current redirect target.
+			$current_target = $wpdb->get_var( $wpdb->prepare(
+				"SELECT action_data FROM {$items_table} WHERE url = %s LIMIT 1",
+				$source_path
+			) );
+
+			if ( null === $current_target ) {
+				$skipped++; // No redirect row for this source path.
+				continue;
+			}
+
+			$correct_target = get_permalink( $post_id );
+			if ( ! $correct_target ) {
+				$skipped++;
+				continue;
+			}
+
+			if ( $current_target !== $correct_target ) {
+				$wpdb->update(
+					$items_table,
+					[ 'action_data' => esc_url_raw( $correct_target ) ],
+					[ 'url' => $source_path ],
+					[ '%s' ],
+					[ '%s' ]
+				);
+				$fixed++;
+			}
+		}
+
+		wp_send_json_success( [
+			'checked' => $checked,
+			'fixed'   => $fixed,
+			'skipped' => $skipped,
+			'total'   => $total,
+			'offset'  => $offset + $checked,
+			'done'    => ( $offset + $checked ) >= $total,
 		] );
 	}
 }

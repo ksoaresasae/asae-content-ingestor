@@ -143,4 +143,25 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		</table>
 	</div>
 
+	<!-- ── Section 4: Fix Redirects ───────────────────────────────────────── -->
+
+	<div class="asae-ci-panel" id="asae-ci-cleanup-redirects-section">
+		<h2><?php esc_html_e( 'Fix Redirects', 'asae-content-ingestor' ); ?></h2>
+		<p class="description">
+			<?php esc_html_e( 'Loops through all published ingested posts and ensures the Redirection plugin\'s stored target URL matches each post\'s current permalink. This is needed after publish dates have been corrected on a site with date-based permalinks. No external fetches are required — this only compares local data. Processes 100 posts per batch.', 'asae-content-ingestor' ); ?>
+		</p>
+		<p class="submit">
+			<button type="button" class="button button-primary" id="asae-ci-fix-redirects-btn">
+				<?php esc_html_e( 'Fix Redirects', 'asae-content-ingestor' ); ?>
+			</button>
+		</p>
+		<div id="asae-ci-redirects-progress" class="asae-ci-hidden" aria-live="polite">
+			<div class="asae-ci-progress-bar-wrap">
+				<div class="asae-ci-progress-bar" id="asae-ci-redirects-bar" style="width:0%"></div>
+			</div>
+			<p id="asae-ci-redirects-status"></p>
+		</div>
+		<div id="asae-ci-redirects-result" class="asae-ci-hidden" aria-live="polite"></div>
+	</div>
+
 </div>
