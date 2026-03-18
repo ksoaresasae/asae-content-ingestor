@@ -1634,6 +1634,30 @@
 			return el.innerHTML;
 		}
 
+		// ── Posts Per Page ───────────────────────────────────────────────────
+
+		$( '#asae-ci-perpage-save-btn' ).on( 'click', function () {
+			var $btn    = $( this ).prop( 'disabled', true );
+			var $result = $( '#asae-ci-perpage-result' );
+			var val     = parseInt( $( '#asae-ci-perpage-input' ).val(), 10 ) || 20;
+
+			$.post( asaeCi.ajaxUrl, {
+				action:   'asae_ci_set_posts_per_page',
+				nonce:    asaeCi.nonce,
+				per_page: val,
+			} ).done( function ( resp ) {
+				if ( resp.success ) {
+					$result.html( '<span style="color:#00a32a;">Saved! All Posts will now show ' + resp.data.per_page + ' per page.</span>' );
+				} else {
+					$result.html( '<span style="color:#d63638;">' + escHtmlCleanup( resp.data ) + '</span>' );
+				}
+				$btn.prop( 'disabled', false );
+			} ).fail( function () {
+				$result.html( '<span style="color:#d63638;">Request failed.</span>' );
+				$btn.prop( 'disabled', false );
+			} );
+		} );
+
 		// ── Cancel All Pending Jobs ──────────────────────────────────────────
 
 		$( '#asae-ci-cancel-all-jobs-btn' ).on( 'click', function () {

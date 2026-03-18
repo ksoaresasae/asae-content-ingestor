@@ -76,6 +76,7 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_publish_all_drafts',    [ __CLASS__, 'ajax_publish_all_drafts' ] );
 		add_action( 'wp_ajax_asae_ci_check_publish_dates',   [ __CLASS__, 'ajax_check_publish_dates' ] );
 		add_action( 'wp_ajax_asae_ci_fix_redirects',         [ __CLASS__, 'ajax_fix_redirects' ] );
+		add_action( 'wp_ajax_asae_ci_set_posts_per_page',    [ __CLASS__, 'ajax_set_posts_per_page' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -1519,5 +1520,22 @@ class ASAE_CI_Admin {
 			'offset'  => $offset + $checked,
 			'done'    => ( $offset + $checked ) >= $total,
 		] );
+	}
+
+	/**
+	 * AJAX: Set the posts-per-page screen option for the All Posts list table.
+	 */
+	public static function ajax_set_posts_per_page(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$per_page = max( 1, min( 999, (int) ( $_POST['per_page'] ?? 20 ) ) );
+		$user_id  = get_current_user_id();
+
+		update_user_meta( $user_id, 'edit_post_per_page', $per_page );
+
+		wp_send_json_success( [ 'per_page' => $per_page ] );
 	}
 }

@@ -64,7 +64,33 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		<div id="asae-ci-cancel-all-jobs-result" class="asae-ci-hidden" aria-live="polite"></div>
 	</div>
 
-	<!-- ── Section 2: Publish All Drafts ──────────────────────────────────── -->
+	<!-- ── Section 2: Posts Per Page ───────────────────────────────────────── -->
+
+	<div class="asae-ci-panel" id="asae-ci-cleanup-perpage-section">
+		<h2><?php esc_html_e( 'Posts Per Page (Screen Options)', 'asae-content-ingestor' ); ?></h2>
+		<p class="description">
+			<?php esc_html_e( 'Sets how many items the All Posts list table shows per page. If the default (20) or a previous value is too high, the page may time out on large sites. This updates your user-level Screen Options without needing to load the All Posts page.', 'asae-content-ingestor' ); ?>
+		</p>
+		<?php
+		$current_per_page = (int) get_user_meta( get_current_user_id(), 'edit_post_per_page', true );
+		if ( ! $current_per_page ) {
+			$current_per_page = 20; // WordPress default.
+		}
+		?>
+		<p>
+			<label for="asae-ci-perpage-input">
+				<?php esc_html_e( 'Posts per page:', 'asae-content-ingestor' ); ?>
+			</label>
+			<input type="number" id="asae-ci-perpage-input" min="1" max="999" step="1"
+				   value="<?php echo esc_attr( $current_per_page ); ?>" style="width:80px;" />
+			<button type="button" class="button button-primary" id="asae-ci-perpage-save-btn">
+				<?php esc_html_e( 'Save', 'asae-content-ingestor' ); ?>
+			</button>
+			<span id="asae-ci-perpage-result" style="margin-left:8px;"></span>
+		</p>
+	</div>
+
+	<!-- ── Section 3: Publish All Drafts ──────────────────────────────────── -->
 
 	<div class="asae-ci-panel" id="asae-ci-cleanup-publish-section">
 		<h2><?php esc_html_e( 'Publish All Drafts', 'asae-content-ingestor' ); ?></h2>
