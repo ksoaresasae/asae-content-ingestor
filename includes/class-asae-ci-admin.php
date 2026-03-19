@@ -78,6 +78,16 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_fix_redirects',         [ __CLASS__, 'ajax_fix_redirects' ] );
 		add_action( 'wp_ajax_asae_ci_set_posts_per_page',    [ __CLASS__, 'ajax_set_posts_per_page' ] );
 		add_action( 'wp_ajax_asae_ci_assign_sponsors',       [ __CLASS__, 'ajax_assign_sponsors' ] );
+
+		// Sponsor taxonomy term meta fields.
+		add_action( 'sponsor_edit_form_fields', [ __CLASS__, 'sponsor_edit_fields' ], 10, 2 );
+		add_action( 'sponsor_add_form_fields',  [ __CLASS__, 'sponsor_add_fields' ] );
+		add_action( 'edited_sponsor',           [ __CLASS__, 'sponsor_save_fields' ] );
+		add_action( 'created_sponsor',          [ __CLASS__, 'sponsor_save_fields' ] );
+
+		// Show logo thumbnail in the Sponsors list table.
+		add_filter( 'manage_edit-sponsor_columns',  [ __CLASS__, 'sponsor_columns' ] );
+		add_filter( 'manage_sponsor_custom_column',  [ __CLASS__, 'sponsor_column_content' ], 10, 3 );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -114,6 +124,14 @@ class ASAE_CI_Admin {
 		$plugin_pages = [
 			'asae_page_asae-content-ingestor',
 		];
+
+		// Enqueue the media library on sponsor taxonomy screens for logo picker.
+		if ( in_array( $hook_suffix, [ 'edit-tags.php', 'term.php' ], true ) ) {
+			$screen = get_current_screen();
+			if ( $screen && 'sponsor' === $screen->taxonomy ) {
+				wp_enqueue_media();
+			}
+		}
 
 		if ( ! in_array( $hook_suffix, $plugin_pages, true ) ) {
 			return;
@@ -1724,6 +1742,159 @@ class ASAE_CI_Admin {
 			'posts_assigned' => $posts_assigned,
 			'status'         => 'processed',
 		] );
+	}
+
+	// ── Sponsor Taxonomy Term Meta Fields ─────────────────────────────────────
+
+	/**
+	 * Renders custom fields on the Edit Sponsor term screen.
+	 *
+	 * @param WP_Term $term     Current term object.
+	 * @param string  $taxonomy Taxonomy slug.
+	 */
+	public static function sponsor_edit_fields( $term, $taxonomy ): void {
+		$logo_id = (int) get_term_meta( $term->term_id, 'sponsor_logo', true );
+		$logo_html = '';
+		if ( $logo_id ) {
+			$img = wp_get_attachment_image( $logo_id, [ 150, 150 ] );
+			if ( $img ) {
+				$logo_html = $img;
+			}
+		}
+		?>
+		<tr class="form-field">
+			<th scope="row"><label for="sponsor_logo"><?php esc_html_e( 'Logo', 'asae-content-ingestor' ); ?></label></th>
+			<td>
+				<div id="sponsor-logo-preview" style="margin-bottom:8px;"><?php echo $logo_html; ?></div>
+				<input type="hidden" name="sponsor_logo" id="sponsor_logo" value="<?php echo esc_attr( $logo_id ); ?>" />
+				<button type="button" class="button" id="sponsor-logo-select"><?php esc_html_e( 'Select Logo', 'asae-content-ingestor' ); ?></button>
+				<button type="button" class="button" id="sponsor-logo-remove" <?php echo $logo_id ? '' : 'style="display:none;"'; ?>><?php esc_html_e( 'Remove Logo', 'asae-content-ingestor' ); ?></button>
+				<p class="description"><?php esc_html_e( 'Sponsor logo image from the Media Library.', 'asae-content-ingestor' ); ?></p>
+				<script>
+				jQuery(function($){
+					var frame;
+					$('#sponsor-logo-select').on('click',function(e){
+						e.preventDefault();
+						if(frame){frame.open();return;}
+						frame=wp.media({title:'<?php echo esc_js( __( 'Select Sponsor Logo', 'asae-content-ingestor' ) ); ?>',button:{text:'<?php echo esc_js( __( 'Use as Logo', 'asae-content-ingestor' ) ); ?>'},multiple:false});
+						frame.on('select',function(){
+							var a=frame.state().get('selection').first().toJSON();
+							$('#sponsor_logo').val(a.id);
+							var url=a.sizes&&a.sizes.thumbnail?a.sizes.thumbnail.url:a.url;
+							$('#sponsor-logo-preview').html('<img src="'+url+'" style="max-width:150px;max-height:150px;">');
+							$('#sponsor-logo-remove').show();
+						});
+						frame.open();
+					});
+					$('#sponsor-logo-remove').on('click',function(e){
+						e.preventDefault();
+						$('#sponsor_logo').val('');
+						$('#sponsor-logo-preview').html('');
+						$(this).hide();
+					});
+				});
+				</script>
+			</td>
+		</tr>
+		<?php
+	}
+
+	/**
+	 * Renders custom fields on the Add New Sponsor form.
+	 *
+	 * @param string $taxonomy Taxonomy slug.
+	 */
+	public static function sponsor_add_fields( $taxonomy ): void {
+		?>
+		<div class="form-field">
+			<label for="sponsor_logo"><?php esc_html_e( 'Logo', 'asae-content-ingestor' ); ?></label>
+			<div id="sponsor-logo-preview" style="margin-bottom:8px;"></div>
+			<input type="hidden" name="sponsor_logo" id="sponsor_logo" value="" />
+			<button type="button" class="button" id="sponsor-logo-select"><?php esc_html_e( 'Select Logo', 'asae-content-ingestor' ); ?></button>
+			<button type="button" class="button" id="sponsor-logo-remove" style="display:none;"><?php esc_html_e( 'Remove Logo', 'asae-content-ingestor' ); ?></button>
+			<p class="description"><?php esc_html_e( 'Sponsor logo image from the Media Library.', 'asae-content-ingestor' ); ?></p>
+			<script>
+			jQuery(function($){
+				var frame;
+				$('#sponsor-logo-select').on('click',function(e){
+					e.preventDefault();
+					if(frame){frame.open();return;}
+					frame=wp.media({title:'<?php echo esc_js( __( 'Select Sponsor Logo', 'asae-content-ingestor' ) ); ?>',button:{text:'<?php echo esc_js( __( 'Use as Logo', 'asae-content-ingestor' ) ); ?>'},multiple:false});
+					frame.on('select',function(){
+						var a=frame.state().get('selection').first().toJSON();
+						$('#sponsor_logo').val(a.id);
+						var url=a.sizes&&a.sizes.thumbnail?a.sizes.thumbnail.url:a.url;
+						$('#sponsor-logo-preview').html('<img src="'+url+'" style="max-width:150px;max-height:150px;">');
+						$('#sponsor-logo-remove').show();
+					});
+					frame.open();
+				});
+				$('#sponsor-logo-remove').on('click',function(e){
+					e.preventDefault();
+					$('#sponsor_logo').val('');
+					$('#sponsor-logo-preview').html('');
+					$(this).hide();
+				});
+			});
+			</script>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Saves the sponsor logo term meta when a term is created or edited.
+	 *
+	 * @param int $term_id Term ID.
+	 */
+	public static function sponsor_save_fields( $term_id ): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		if ( isset( $_POST['sponsor_logo'] ) ) {
+			$logo_id = (int) $_POST['sponsor_logo'];
+			if ( $logo_id ) {
+				update_term_meta( $term_id, 'sponsor_logo', $logo_id );
+			} else {
+				delete_term_meta( $term_id, 'sponsor_logo' );
+			}
+		}
+	}
+
+	/**
+	 * Adds a Logo column to the Sponsors list table.
+	 *
+	 * @param array $columns Existing columns.
+	 * @return array Modified columns.
+	 */
+	public static function sponsor_columns( $columns ): array {
+		$new = [];
+		foreach ( $columns as $key => $label ) {
+			if ( 'name' === $key ) {
+				$new['sponsor_logo'] = __( 'Logo', 'asae-content-ingestor' );
+			}
+			$new[ $key ] = $label;
+		}
+		return $new;
+	}
+
+	/**
+	 * Renders the Logo column content in the Sponsors list table.
+	 *
+	 * @param string $content     Column content.
+	 * @param string $column_name Column name.
+	 * @param int    $term_id     Term ID.
+	 * @return string Modified content.
+	 */
+	public static function sponsor_column_content( $content, $column_name, $term_id ): string {
+		if ( 'sponsor_logo' === $column_name ) {
+			$logo_id = (int) get_term_meta( $term_id, 'sponsor_logo', true );
+			if ( $logo_id ) {
+				$img = wp_get_attachment_image( $logo_id, [ 40, 40 ], false, [ 'style' => 'max-width:40px;max-height:40px;' ] );
+				return $img ?: '&mdash;';
+			}
+			return '&mdash;';
+		}
+		return $content;
 	}
 
 	/**
