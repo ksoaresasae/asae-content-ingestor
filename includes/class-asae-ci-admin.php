@@ -1581,28 +1581,7 @@ class ASAE_CI_Admin {
 		$existing = term_exists( $slug, 'sponsor' );
 		$term_id  = $existing ? (int) ( is_array( $existing ) ? $existing['term_id'] : $existing ) : 0;
 
-		// If term already has a logo AND posts assigned, skip the HTTP fetch.
-		if ( $term_id ) {
-			$has_logo  = (bool) get_term_meta( $term_id, 'sponsor_logo', true );
-			$has_posts = (bool) $wpdb->get_var( $wpdb->prepare(
-				"SELECT COUNT(*) FROM {$wpdb->term_relationships} WHERE term_taxonomy_id = (
-					SELECT term_taxonomy_id FROM {$wpdb->term_taxonomy} WHERE term_id = %d AND taxonomy = 'sponsor'
-				)",
-				$term_id
-			) );
-			if ( $has_logo && $has_posts ) {
-				wp_send_json_success( [
-					'slug'           => $slug,
-					'name'           => get_term( $term_id, 'sponsor' )->name ?? $slug,
-					'term_id'        => $term_id,
-					'logo_attached'  => true,
-					'articles_found' => 0,
-					'posts_matched'  => 0,
-					'posts_assigned' => 0,
-					'status'         => 'skipped',
-				] );
-			}
-		}
+		// Always re-process to update name/logo from article sponsor-meta.
 
 		// 2. Fetch listing page.
 		$url      = 'https://associationsnow.com/?taxonomy=sponsors&term=' . rawurlencode( $slug );
@@ -1632,45 +1611,65 @@ class ASAE_CI_Admin {
 
 		$html = wp_remote_retrieve_body( $response );
 
-		// 3. Parse the HTML.
+		// 3. Parse the listing page for article URLs only.
 		$parsed = self::parse_sponsor_listing( $html, $slug );
 
-		// 4. Create or update term.
+		// 4. Fetch the FIRST article to get real sponsor name + logo from div.sponsor-meta.
+		$sponsor_name = ucwords( str_replace( '-', ' ', $slug ) ); // fallback
+		$logo_url     = '';
+
+		if ( ! empty( $parsed['article_urls'] ) ) {
+			$article_url = $parsed['article_urls'][0];
+			$art_resp    = wp_remote_get( $article_url, [
+				'timeout'    => 20,
+				'user-agent' => 'ASAE-Content-Ingestor/' . ASAE_CI_VERSION,
+			] );
+
+			if ( ! is_wp_error( $art_resp ) && 200 === wp_remote_retrieve_response_code( $art_resp ) ) {
+				$art_html   = wp_remote_retrieve_body( $art_resp );
+				$art_parsed = self::parse_sponsor_meta( $art_html, $slug );
+				if ( $art_parsed['name'] ) {
+					$sponsor_name = $art_parsed['name'];
+				}
+				if ( $art_parsed['logo_url'] ) {
+					$logo_url = $art_parsed['logo_url'];
+				}
+			}
+		}
+
+		// 5. Create or update term.
 		if ( ! $term_id ) {
-			$result = wp_insert_term( $parsed['name'], 'sponsor', [ 'slug' => $slug ] );
+			$result = wp_insert_term( $sponsor_name, 'sponsor', [ 'slug' => $slug ] );
 			if ( is_wp_error( $result ) ) {
 				// Term exists (race condition or slug mismatch) — get existing.
 				$term_id = (int) $result->get_error_data();
 			} else {
 				$term_id = (int) $result['term_id'];
 			}
-		} else {
-			// Update the name if we now have a better one.
-			wp_update_term( $term_id, 'sponsor', [ 'name' => $parsed['name'] ] );
+		}
+		// Always update name to the parsed value.
+		if ( $term_id ) {
+			wp_update_term( $term_id, 'sponsor', [ 'name' => $sponsor_name ] );
 		}
 
-		// 5. Download logo if not already stored.
+		// 6. Download logo (always replace to fix bad logos from first run).
 		$logo_attached = false;
-		if ( $parsed['logo_url'] && $term_id ) {
-			$existing_logo = get_term_meta( $term_id, 'sponsor_logo', true );
-			if ( ! $existing_logo || ! get_post( $existing_logo ) ) {
-				$attachment_id = ASAE_CI_Ingester::download_and_attach_image(
-					$parsed['logo_url'],
-					0,
-					$parsed['name'] . ' Logo'
-				);
-				if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
-					update_term_meta( $term_id, 'sponsor_logo', (int) $attachment_id );
-					$logo_attached = true;
-				}
-			} else {
+		if ( $logo_url && $term_id ) {
+			// Delete old logo attachment if it exists.
+			$old_logo = (int) get_term_meta( $term_id, 'sponsor_logo', true );
+			if ( $old_logo && get_post( $old_logo ) ) {
+				wp_delete_attachment( $old_logo, true );
+			}
+
+			$attachment_id = ASAE_CI_Ingester::download_and_attach_image(
+				$logo_url,
+				0,
+				$sponsor_name . ' Logo'
+			);
+			if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
+				update_term_meta( $term_id, 'sponsor_logo', (int) $attachment_id );
 				$logo_attached = true;
 			}
-		}
-
-		// Store description if found.
-		if ( $parsed['description'] && $term_id ) {
-			update_term_meta( $term_id, 'sponsor_description', sanitize_textarea_field( $parsed['description'] ) );
 		}
 
 		// 6. Match article URLs against ingested posts.
@@ -1717,7 +1716,7 @@ class ASAE_CI_Admin {
 
 		wp_send_json_success( [
 			'slug'           => $slug,
-			'name'           => $parsed['name'],
+			'name'           => $sponsor_name,
 			'term_id'        => $term_id,
 			'logo_attached'  => $logo_attached,
 			'articles_found' => $articles_found,
@@ -1810,6 +1809,76 @@ class ASAE_CI_Admin {
 				}
 			}
 			$result['article_urls'] = array_unique( $result['article_urls'] );
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Parses a single article page for the sponsor name and logo from div.sponsor-meta.
+	 *
+	 * Expected HTML structure:
+	 *   <div class="sponsor-meta">
+	 *     <span><img src="logo.png" ...></span>
+	 *     <span>Sponsored By Sponsor Name</span>
+	 *   </div>
+	 *
+	 * @param string $html Raw article HTML.
+	 * @param string $slug Sponsor slug (fallback).
+	 * @return array { name: string, logo_url: string }
+	 */
+	private static function parse_sponsor_meta( string $html, string $slug ): array {
+		$result = [
+			'name'     => '',
+			'logo_url' => '',
+		];
+
+		if ( empty( $html ) ) {
+			return $result;
+		}
+
+		$dom = new \DOMDocument();
+		libxml_use_internal_errors( true );
+		$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
+		libxml_clear_errors();
+
+		$xpath = new \DOMXPath( $dom );
+
+		// Find the div.sponsor-meta element.
+		$sponsor_divs = $xpath->query( '//div[contains(@class, "sponsor-meta")]' );
+		if ( ! $sponsor_divs || 0 === $sponsor_divs->length ) {
+			return $result;
+		}
+
+		$sponsor_div = $sponsor_divs->item( 0 );
+
+		// Get all spans inside the sponsor-meta div.
+		$spans = $xpath->query( './/span', $sponsor_div );
+		if ( ! $spans ) {
+			return $result;
+		}
+
+		foreach ( $spans as $span ) {
+			// Check for logo image.
+			$imgs = $xpath->query( './/img', $span );
+			if ( $imgs && $imgs->length > 0 ) {
+				$src = $imgs->item( 0 )->getAttribute( 'src' );
+				if ( $src ) {
+					$result['logo_url'] = $src;
+				}
+				continue;
+			}
+
+			// Check for sponsor name text.
+			$text = trim( $span->textContent );
+			if ( $text ) {
+				// Strip "Sponsored By" prefix (case-insensitive).
+				$name = preg_replace( '/^sponsored\s+by\s+/i', '', $text );
+				$name = trim( $name );
+				if ( $name ) {
+					$result['name'] = $name;
+				}
+			}
 		}
 
 		return $result;
