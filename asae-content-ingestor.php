@@ -3,7 +3,7 @@
  * Plugin Name:       ASAE Content Ingestor
  * Plugin URI:        https://keithmsoares.com
  * Description:       Reads an RSS/Atom feed and ingests linked articles as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Supports a URL restriction prefix to filter feed links. Designed for migrating legacy ASAE sites into WordPress.
- * Version:           1.1.0
+ * Version:           1.1.1
  * Author:            Keith M. Soares
  * Author URI:        https://keithmsoares.com
  * License:           CC
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ── Plugin Constants ──────────────────────────────────────────────────────────
 
 /** Semantic version string used throughout the codebase and in the UI. */
-define( 'ASAE_CI_VERSION', '1.1.0' );
+define( 'ASAE_CI_VERSION', '1.1.1' );
 
 /** Absolute path to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_PATH', plugin_dir_path( __FILE__ ) );
@@ -104,7 +104,24 @@ function asae_ci_init() {
 		update_option( 'asae_ci_version', ASAE_CI_VERSION );
 	}
 
-	// Register the Sponsors taxonomy for posts (flat, tag-like).
+	// Register WP Cron callback for background batch processing.
+	add_action( ASAE_CI_CRON_HOOK, [ 'ASAE_CI_Scheduler', 'process_cron_batch' ] );
+
+	// Serve stored author photos as avatars everywhere WP renders get_avatar().
+	// This works regardless of whether Simple Local Avatars is installed.
+	add_filter( 'pre_get_avatar_data', 'asae_ci_filter_avatar_data', 10, 2 );
+
+	// Initialise the admin UI (menus, AJAX handlers, enqueue hooks).
+	if ( is_admin() ) {
+		ASAE_CI_Admin::init();
+	}
+}
+add_action( 'plugins_loaded', 'asae_ci_init' );
+
+/**
+ * Registers custom taxonomies on the 'init' hook (after rewrite rules are available).
+ */
+function asae_ci_register_taxonomies() {
 	register_taxonomy( 'sponsor', [ 'post' ], [
 		'labels'            => [
 			'name'              => __( 'Sponsors', 'asae-content-ingestor' ),
@@ -123,20 +140,8 @@ function asae_ci_init() {
 		'show_admin_column' => true,
 		'rewrite'           => [ 'slug' => 'sponsor' ],
 	] );
-
-	// Register WP Cron callback for background batch processing.
-	add_action( ASAE_CI_CRON_HOOK, [ 'ASAE_CI_Scheduler', 'process_cron_batch' ] );
-
-	// Serve stored author photos as avatars everywhere WP renders get_avatar().
-	// This works regardless of whether Simple Local Avatars is installed.
-	add_filter( 'pre_get_avatar_data', 'asae_ci_filter_avatar_data', 10, 2 );
-
-	// Initialise the admin UI (menus, AJAX handlers, enqueue hooks).
-	if ( is_admin() ) {
-		ASAE_CI_Admin::init();
-	}
 }
-add_action( 'plugins_loaded', 'asae_ci_init' );
+add_action( 'init', 'asae_ci_register_taxonomies' );
 
 /**
  * Supplies a stored author photo URL to WordPress's avatar system.
