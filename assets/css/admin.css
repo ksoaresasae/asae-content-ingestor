@@ -808,3 +808,12 @@ fieldset.asae-ci-field legend {
 #asae-ci-dates-log th {
 	padding: .5rem .75rem;
 }
+
+#asae-ci-sponsors-log {
+	margin-top: 1rem;
+}
+
+#asae-ci-sponsors-log td,
+#asae-ci-sponsors-log th {
+	padding: .5rem .75rem;
+}

@@ -1901,6 +1901,117 @@
 
 			fixBatch();
 		} );
+
+		// ── Assign Sponsors ──────────────────────────────────────────────────
+
+		$( '#asae-ci-assign-sponsors-btn' ).on( 'click', function () {
+			var slugs = asaeCi.sponsorSlugs || [];
+			if ( ! slugs.length ) {
+				alert( 'No sponsor slugs found.' );
+				return;
+			}
+			if ( ! confirm( 'This will fetch ' + slugs.length + ' sponsor listing pages from associationsnow.com and assign sponsor terms to matching posts. Continue?' ) ) {
+				return;
+			}
+
+			var $btn      = $( this ).prop( 'disabled', true );
+			var $progress = $( '#asae-ci-sponsors-progress' ).removeClass( 'asae-ci-hidden' );
+			var $bar      = $( '#asae-ci-sponsors-bar' );
+			var $status   = $( '#asae-ci-sponsors-status' );
+			var $result   = $( '#asae-ci-sponsors-result' );
+			$( '#asae-ci-sponsors-log' ).removeClass( 'asae-ci-hidden' );
+			var $logBody  = $( '#asae-ci-sponsors-log-body' ).empty();
+
+			var index          = 0;
+			var totalMatched   = 0;
+			var totalAssigned  = 0;
+			var totalErrors    = 0;
+
+			function processSponsor() {
+				if ( index >= slugs.length ) {
+					$progress.addClass( 'asae-ci-hidden' );
+					$bar.css( 'width', '100%' );
+					$result.html(
+						'<div class="notice notice-success inline"><p>Done! Processed ' +
+						slugs.length + ' sponsors. ' +
+						totalMatched.toLocaleString() + ' posts matched, ' +
+						totalAssigned.toLocaleString() + ' assigned, ' +
+						totalErrors + ' errors.</p></div>'
+					).removeClass( 'asae-ci-hidden' );
+					$btn.prop( 'disabled', false );
+					return;
+				}
+
+				var slug = slugs[ index ];
+				var pct  = Math.round( ( index / slugs.length ) * 100 );
+				$bar.css( 'width', pct + '%' );
+				$status.text( 'Processing ' + ( index + 1 ) + ' of ' + slugs.length + ': ' + slug + '…' );
+
+				$.post( asaeCi.ajaxUrl, {
+					action: 'asae_ci_assign_sponsors',
+					nonce:  asaeCi.nonce,
+					slug:   slug,
+				} ).done( function ( resp ) {
+					index++;
+
+					if ( ! resp.success ) {
+						totalErrors++;
+						$logBody.append(
+							'<tr>' +
+								'<td>' + index + '</td>' +
+								'<td>' + escHtmlCleanup( slug ) + '</td>' +
+								'<td>—</td><td>—</td><td>—</td><td>—</td>' +
+								'<td><span style="color:#d63638;">Error</span></td>' +
+							'</tr>'
+						);
+						processSponsor();
+						return;
+					}
+
+					var d = resp.data;
+					totalMatched  += d.posts_matched;
+					totalAssigned += d.posts_assigned;
+
+					var statusLabel = '';
+					if ( d.status === 'skipped' ) {
+						statusLabel = '<span style="color:#666;">Skipped</span>';
+					} else if ( d.status === 'fetch_error' ) {
+						statusLabel = '<span style="color:#d63638;">Fetch Error</span>';
+						totalErrors++;
+					} else {
+						statusLabel = '<span style="color:#00a32a;">OK</span>';
+					}
+
+					$logBody.append(
+						'<tr>' +
+							'<td>' + index + '</td>' +
+							'<td>' + escHtmlCleanup( d.name ) + '</td>' +
+							'<td>' + ( d.logo_attached ? '&#10003;' : '—' ) + '</td>' +
+							'<td>' + d.articles_found + '</td>' +
+							'<td>' + d.posts_matched + '</td>' +
+							'<td>' + d.posts_assigned + '</td>' +
+							'<td>' + statusLabel + '</td>' +
+						'</tr>'
+					);
+
+					processSponsor();
+				} ).fail( function () {
+					totalErrors++;
+					index++;
+					$logBody.append(
+						'<tr>' +
+							'<td>' + index + '</td>' +
+							'<td>' + escHtmlCleanup( slug ) + '</td>' +
+							'<td>—</td><td>—</td><td>—</td><td>—</td>' +
+							'<td><span style="color:#d63638;">Network Error</span></td>' +
+						'</tr>'
+					);
+					processSponsor();
+				} );
+			}
+
+			processSponsor();
+		} );
 	}
 
 } )( jQuery );

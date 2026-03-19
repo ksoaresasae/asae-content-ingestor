@@ -3,7 +3,7 @@
  * Plugin Name:       ASAE Content Ingestor
  * Plugin URI:        https://keithmsoares.com
  * Description:       Reads an RSS/Atom feed and ingests linked articles as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Supports a URL restriction prefix to filter feed links. Designed for migrating legacy ASAE sites into WordPress.
- * Version:           1.0.5
+ * Version:           1.1.0
  * Author:            Keith M. Soares
  * Author URI:        https://keithmsoares.com
  * License:           CC
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ── Plugin Constants ──────────────────────────────────────────────────────────
 
 /** Semantic version string used throughout the codebase and in the UI. */
-define( 'ASAE_CI_VERSION', '1.0.5' );
+define( 'ASAE_CI_VERSION', '1.1.0' );
 
 /** Absolute path to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_PATH', plugin_dir_path( __FILE__ ) );
@@ -103,6 +103,26 @@ function asae_ci_init() {
 		ASAE_CI_DB::create_tables();
 		update_option( 'asae_ci_version', ASAE_CI_VERSION );
 	}
+
+	// Register the Sponsors taxonomy for posts (flat, tag-like).
+	register_taxonomy( 'sponsor', [ 'post' ], [
+		'labels'            => [
+			'name'              => __( 'Sponsors', 'asae-content-ingestor' ),
+			'singular_name'     => __( 'Sponsor', 'asae-content-ingestor' ),
+			'search_items'      => __( 'Search Sponsors', 'asae-content-ingestor' ),
+			'all_items'         => __( 'All Sponsors', 'asae-content-ingestor' ),
+			'edit_item'         => __( 'Edit Sponsor', 'asae-content-ingestor' ),
+			'update_item'       => __( 'Update Sponsor', 'asae-content-ingestor' ),
+			'add_new_item'      => __( 'Add New Sponsor', 'asae-content-ingestor' ),
+			'new_item_name'     => __( 'New Sponsor Name', 'asae-content-ingestor' ),
+			'menu_name'         => __( 'Sponsors', 'asae-content-ingestor' ),
+		],
+		'hierarchical'      => false,
+		'public'            => true,
+		'show_in_rest'      => true,
+		'show_admin_column' => true,
+		'rewrite'           => [ 'slug' => 'sponsor' ],
+	] );
 
 	// Register WP Cron callback for background batch processing.
 	add_action( ASAE_CI_CRON_HOOK, [ 'ASAE_CI_Scheduler', 'process_cron_batch' ] );

@@ -77,6 +77,7 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_check_publish_dates',   [ __CLASS__, 'ajax_check_publish_dates' ] );
 		add_action( 'wp_ajax_asae_ci_fix_redirects',         [ __CLASS__, 'ajax_fix_redirects' ] );
 		add_action( 'wp_ajax_asae_ci_set_posts_per_page',    [ __CLASS__, 'ajax_set_posts_per_page' ] );
+		add_action( 'wp_ajax_asae_ci_assign_sponsors',       [ __CLASS__, 'ajax_assign_sponsors' ] );
 	}
 
 	// ── Menu Registration ─────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ class ASAE_CI_Admin {
 			'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
 			'nonce'         => wp_create_nonce( self::AJAX_NONCE ),
 			'runningJobKey' => $running_job_key,
+			'sponsorSlugs'  => self::get_sponsor_slugs(),
 			'strings'       => [
 				'startingJob'    => __( 'Starting job…', 'asae-content-ingestor' ),
 				'discovering'    => __( 'Reading RSS feed…', 'asae-content-ingestor' ),
@@ -1537,5 +1539,279 @@ class ASAE_CI_Admin {
 		update_user_meta( $user_id, 'edit_post_per_page', $per_page );
 
 		wp_send_json_success( [ 'per_page' => $per_page ] );
+	}
+
+	// ── Sponsor Assignment ───────────────────────────────────────────────────
+
+	/**
+	 * Reads sponsor slugs from the data file in the plugin root.
+	 *
+	 * @return string[]
+	 */
+	private static function get_sponsor_slugs(): array {
+		$file = ASAE_CI_PATH . 'sponsors.gitignore_global';
+		if ( ! file_exists( $file ) ) {
+			return [];
+		}
+		$lines = file( $file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES );
+		return array_values( array_filter( array_map( 'trim', $lines ) ) );
+	}
+
+	/**
+	 * AJAX: Process a single sponsor slug.
+	 *
+	 * Fetches the sponsor listing page from associationsnow.com, extracts the
+	 * sponsor name/logo/article URLs, creates (or reuses) a taxonomy term, and
+	 * assigns the term to all matching locally-ingested posts.
+	 */
+	public static function ajax_assign_sponsors(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$slug = sanitize_key( $_POST['slug'] ?? '' );
+		if ( ! $slug ) {
+			wp_send_json_error( 'No sponsor slug provided.' );
+		}
+
+		global $wpdb;
+
+		// 1. Check if term already exists.
+		$existing = term_exists( $slug, 'sponsor' );
+		$term_id  = $existing ? (int) ( is_array( $existing ) ? $existing['term_id'] : $existing ) : 0;
+
+		// If term already has a logo AND posts assigned, skip the HTTP fetch.
+		if ( $term_id ) {
+			$has_logo  = (bool) get_term_meta( $term_id, 'sponsor_logo', true );
+			$has_posts = (bool) $wpdb->get_var( $wpdb->prepare(
+				"SELECT COUNT(*) FROM {$wpdb->term_relationships} WHERE term_taxonomy_id = (
+					SELECT term_taxonomy_id FROM {$wpdb->term_taxonomy} WHERE term_id = %d AND taxonomy = 'sponsor'
+				)",
+				$term_id
+			) );
+			if ( $has_logo && $has_posts ) {
+				wp_send_json_success( [
+					'slug'           => $slug,
+					'name'           => get_term( $term_id, 'sponsor' )->name ?? $slug,
+					'term_id'        => $term_id,
+					'logo_attached'  => true,
+					'articles_found' => 0,
+					'posts_matched'  => 0,
+					'posts_assigned' => 0,
+					'status'         => 'skipped',
+				] );
+			}
+		}
+
+		// 2. Fetch listing page.
+		$url      = 'https://associationsnow.com/?taxonomy=sponsors&term=' . rawurlencode( $slug );
+		$response = wp_remote_get( $url, [
+			'timeout'    => 20,
+			'user-agent' => 'ASAE-Content-Ingestor/' . ASAE_CI_VERSION,
+		] );
+
+		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			// Still create the term with a fallback name so we can assign manually later.
+			if ( ! $term_id ) {
+				$fallback_name = ucwords( str_replace( '-', ' ', $slug ) );
+				$result  = wp_insert_term( $fallback_name, 'sponsor', [ 'slug' => $slug ] );
+				$term_id = is_array( $result ) ? (int) $result['term_id'] : 0;
+			}
+			wp_send_json_success( [
+				'slug'           => $slug,
+				'name'           => $term_id ? get_term( $term_id, 'sponsor' )->name : $slug,
+				'term_id'        => $term_id,
+				'logo_attached'  => false,
+				'articles_found' => 0,
+				'posts_matched'  => 0,
+				'posts_assigned' => 0,
+				'status'         => 'fetch_error',
+			] );
+		}
+
+		$html = wp_remote_retrieve_body( $response );
+
+		// 3. Parse the HTML.
+		$parsed = self::parse_sponsor_listing( $html, $slug );
+
+		// 4. Create or update term.
+		if ( ! $term_id ) {
+			$result = wp_insert_term( $parsed['name'], 'sponsor', [ 'slug' => $slug ] );
+			if ( is_wp_error( $result ) ) {
+				// Term exists (race condition or slug mismatch) — get existing.
+				$term_id = (int) $result->get_error_data();
+			} else {
+				$term_id = (int) $result['term_id'];
+			}
+		} else {
+			// Update the name if we now have a better one.
+			wp_update_term( $term_id, 'sponsor', [ 'name' => $parsed['name'] ] );
+		}
+
+		// 5. Download logo if not already stored.
+		$logo_attached = false;
+		if ( $parsed['logo_url'] && $term_id ) {
+			$existing_logo = get_term_meta( $term_id, 'sponsor_logo', true );
+			if ( ! $existing_logo || ! get_post( $existing_logo ) ) {
+				$attachment_id = ASAE_CI_Ingester::download_and_attach_image(
+					$parsed['logo_url'],
+					0,
+					$parsed['name'] . ' Logo'
+				);
+				if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
+					update_term_meta( $term_id, 'sponsor_logo', (int) $attachment_id );
+					$logo_attached = true;
+				}
+			} else {
+				$logo_attached = true;
+			}
+		}
+
+		// Store description if found.
+		if ( $parsed['description'] && $term_id ) {
+			update_term_meta( $term_id, 'sponsor_description', sanitize_textarea_field( $parsed['description'] ) );
+		}
+
+		// 6. Match article URLs against ingested posts.
+		$articles_found = count( $parsed['article_urls'] );
+		$posts_matched  = 0;
+		$posts_assigned = 0;
+
+		if ( $articles_found > 0 && $term_id ) {
+			// Normalise URLs for matching (strip trailing slashes, force https).
+			$normalised = array_map( function ( $u ) {
+				$u = untrailingslashit( $u );
+				$u = str_replace( 'http://', 'https://', $u );
+				return $u;
+			}, $parsed['article_urls'] );
+
+			// Build placeholders for IN clause.
+			// Also try with trailing slash variants for better matching.
+			$all_variants = [];
+			foreach ( $normalised as $n ) {
+				$all_variants[] = $n;
+				$all_variants[] = trailingslashit( $n );
+			}
+			$placeholders = implode( ', ', array_fill( 0, count( $all_variants ), '%s' ) );
+
+			$matched_posts = $wpdb->get_col(
+				$wpdb->prepare(
+					"SELECT post_id FROM {$wpdb->postmeta}
+					 WHERE meta_key = '_asae_ci_source_url'
+					   AND meta_value IN ({$placeholders})",
+					...$all_variants
+				)
+			);
+
+			$posts_matched = count( $matched_posts );
+
+			foreach ( $matched_posts as $post_id ) {
+				$post_id = (int) $post_id;
+				if ( ! has_term( $term_id, 'sponsor', $post_id ) ) {
+					wp_set_object_terms( $post_id, [ $term_id ], 'sponsor', true );
+					$posts_assigned++;
+				}
+			}
+		}
+
+		wp_send_json_success( [
+			'slug'           => $slug,
+			'name'           => $parsed['name'],
+			'term_id'        => $term_id,
+			'logo_attached'  => $logo_attached,
+			'articles_found' => $articles_found,
+			'posts_matched'  => $posts_matched,
+			'posts_assigned' => $posts_assigned,
+			'status'         => 'processed',
+		] );
+	}
+
+	/**
+	 * Parses a sponsor listing page from associationsnow.com.
+	 *
+	 * Extracts the sponsor display name, logo URL, description, and article URLs.
+	 *
+	 * @param string $html Raw HTML of the listing page.
+	 * @param string $slug Sponsor slug (used as fallback for the name).
+	 * @return array { name: string, logo_url: string, description: string, article_urls: string[] }
+	 */
+	private static function parse_sponsor_listing( string $html, string $slug ): array {
+		$fallback_name = ucwords( str_replace( '-', ' ', $slug ) );
+
+		$result = [
+			'name'         => $fallback_name,
+			'logo_url'     => '',
+			'description'  => '',
+			'article_urls' => [],
+		];
+
+		if ( empty( $html ) ) {
+			return $result;
+		}
+
+		$dom = new \DOMDocument();
+		libxml_use_internal_errors( true );
+		$dom->loadHTML( '<?xml encoding="UTF-8">' . $html );
+		libxml_clear_errors();
+
+		$xpath = new \DOMXPath( $dom );
+
+		// ── Sponsor name: look for the page heading ──
+		// Try h1 first, then fallback to the <title> tag.
+		$h1_nodes = $xpath->query( '//h1' );
+		if ( $h1_nodes && $h1_nodes->length > 0 ) {
+			$h1_text = trim( $h1_nodes->item( 0 )->textContent );
+			if ( $h1_text && strlen( $h1_text ) < 200 ) {
+				$result['name'] = $h1_text;
+			}
+		}
+
+		// ── Sponsor logo: look for img in the header area ──
+		// Strategy 1: img with sponsor name in alt text.
+		$imgs = $xpath->query( '//img' );
+		if ( $imgs ) {
+			foreach ( $imgs as $img ) {
+				$alt = strtolower( $img->getAttribute( 'alt' ) ?? '' );
+				$src = $img->getAttribute( 'src' ) ?? '';
+				if ( ! $src ) {
+					continue;
+				}
+				// Match if alt contains the slug words or "logo".
+				$slug_words = explode( '-', $slug );
+				$match      = false;
+				foreach ( $slug_words as $word ) {
+					if ( strlen( $word ) >= 3 && stripos( $alt, $word ) !== false ) {
+						$match = true;
+						break;
+					}
+				}
+				if ( $match || stripos( $alt, 'logo' ) !== false ) {
+					// Prefer wp-content/uploads images over external/ad images.
+					if ( strpos( $src, 'wp-content/uploads' ) !== false ) {
+						$result['logo_url'] = $src;
+						break;
+					}
+					if ( ! $result['logo_url'] ) {
+						$result['logo_url'] = $src;
+					}
+				}
+			}
+		}
+
+		// ── Article URLs: links matching the article URL pattern ──
+		$links = $xpath->query( '//a[@href]' );
+		if ( $links ) {
+			foreach ( $links as $link ) {
+				$href = $link->getAttribute( 'href' );
+				// Match associationsnow.com article URLs: /YYYY/MM/slug/
+				if ( preg_match( '#associationsnow\.com/\d{4}/\d{2}/[^/]+#', $href ) ) {
+					$result['article_urls'][] = $href;
+				}
+			}
+			$result['article_urls'] = array_unique( $result['article_urls'] );
+		}
+
+		return $result;
 	}
 }

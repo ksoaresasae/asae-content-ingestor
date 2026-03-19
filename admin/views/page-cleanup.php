@@ -190,4 +190,39 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		<div id="asae-ci-redirects-result" class="asae-ci-hidden" aria-live="polite"></div>
 	</div>
 
+	<!-- ── Section 5: Assign Sponsors ─────────────────────────────────────── -->
+
+	<div class="asae-ci-panel" id="asae-ci-cleanup-sponsors-section">
+		<h2><?php esc_html_e( 'Assign Sponsors', 'asae-content-ingestor' ); ?></h2>
+		<p class="description">
+			<?php esc_html_e( 'Fetches each sponsor\'s listing page from associationsnow.com, extracts the sponsor name and logo, creates a Sponsor taxonomy term, and assigns it to all matching ingested posts. Processes one sponsor per request (67 total). Safe to re-run — existing sponsors are skipped.', 'asae-content-ingestor' ); ?>
+		</p>
+		<p class="submit">
+			<button type="button" class="button button-primary" id="asae-ci-assign-sponsors-btn">
+				<?php esc_html_e( 'Assign Sponsors', 'asae-content-ingestor' ); ?>
+			</button>
+		</p>
+		<div id="asae-ci-sponsors-progress" class="asae-ci-hidden" aria-live="polite">
+			<div class="asae-ci-progress-bar-wrap">
+				<div class="asae-ci-progress-bar" id="asae-ci-sponsors-bar" style="width:0%"></div>
+			</div>
+			<p id="asae-ci-sponsors-status"></p>
+		</div>
+		<div id="asae-ci-sponsors-result" class="asae-ci-hidden" aria-live="polite"></div>
+		<table class="wp-list-table widefat fixed striped asae-ci-hidden" id="asae-ci-sponsors-log">
+			<thead>
+				<tr>
+					<th scope="col" style="width:40px">#</th>
+					<th scope="col"><?php esc_html_e( 'Sponsor', 'asae-content-ingestor' ); ?></th>
+					<th scope="col" style="width:60px"><?php esc_html_e( 'Logo', 'asae-content-ingestor' ); ?></th>
+					<th scope="col" style="width:100px"><?php esc_html_e( 'Articles', 'asae-content-ingestor' ); ?></th>
+					<th scope="col" style="width:100px"><?php esc_html_e( 'Matched', 'asae-content-ingestor' ); ?></th>
+					<th scope="col" style="width:100px"><?php esc_html_e( 'Assigned', 'asae-content-ingestor' ); ?></th>
+					<th scope="col" style="width:100px"><?php esc_html_e( 'Status', 'asae-content-ingestor' ); ?></th>
+				</tr>
+			</thead>
+			<tbody id="asae-ci-sponsors-log-body"></tbody>
+		</table>
+	</div>
+
 </div>

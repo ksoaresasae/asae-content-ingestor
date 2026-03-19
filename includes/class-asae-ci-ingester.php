@@ -421,7 +421,7 @@ class ASAE_CI_Ingester {
 	 * @param string $title         Optional title for the attachment.
 	 * @return int|WP_Error  Attachment post ID on success, WP_Error on failure.
 	 */
-	private static function download_and_attach_image( string $image_url, int $post_id, string $title = '' ) {
+	public static function download_and_attach_image( string $image_url, int $post_id, string $title = '' ) {
 		if ( empty( $image_url ) ) {
 			return new WP_Error( 'asae_ci_no_image', 'No image URL provided.' );
 		}
