@@ -47,8 +47,8 @@ $post_types = ASAE_CI_Admin::get_eligible_post_types();
 				</th>
 				<td>
 					<select id="oto-post-type">
-						<?php foreach ( $post_types as $slug => $label ) : ?>
-							<option value="<?php echo esc_attr( $slug ); ?>"><?php echo esc_html( $label ); ?></option>
+						<?php foreach ( $post_types as $slug => $pt_obj ) : ?>
+							<option value="<?php echo esc_attr( $slug ); ?>"><?php echo esc_html( $pt_obj->label ); ?></option>
 						<?php endforeach; ?>
 					</select>
 				</td>
