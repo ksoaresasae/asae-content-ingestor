@@ -910,13 +910,9 @@ class ASAE_CI_Admin {
 	 * @return WP_Post_Type[] Array of WP_Post_Type objects keyed by slug.
 	 */
 	public static function get_eligible_post_types(): array {
-		return get_post_types(
-			[
-				'public'             => true,
-				'publicly_queryable' => true,
-			],
-			'objects'
-		);
+		$types = get_post_types( [ 'public' => true ], 'objects' );
+		unset( $types['attachment'] );
+		return $types;
 	}
 
 	// ── YouTube Feed Tab AJAX Handlers ────────────────────────────────────
@@ -1984,12 +1980,13 @@ class ASAE_CI_Admin {
 		update_post_meta( $post_id, '_asae_ci_source_url', esc_url_raw( $source_url ) );
 		$log[] = 'Stored source URL as post meta.';
 
-		// Step 9: Assign tags.
+		// Step 9: Assign tags (only for post types that support them).
 		$tags = array_values( array_unique( array_filter( $parsed['tags'] ?? [] ) ) );
-		if ( ! empty( $tags ) ) {
-			$taxonomy = ( 'post' === $post_type ) ? 'post_tag' : 'post_tag';
-			wp_set_object_terms( $post_id, $tags, $taxonomy, true );
+		if ( ! empty( $tags ) && is_object_in_taxonomy( $post_type, 'post_tag' ) ) {
+			wp_set_object_terms( $post_id, $tags, 'post_tag', true );
 			$log[] = 'Assigned ' . count( $tags ) . ' tags: ' . implode( ', ', $tags );
+		} elseif ( ! empty( $tags ) ) {
+			$log[] = 'Skipping tags — ' . $post_type . ' does not support tags.';
 		}
 
 		// Step 10: Process images.
@@ -2029,14 +2026,18 @@ class ASAE_CI_Admin {
 			}
 		}
 
-		// Step 11: Assign category.
-		$log[] = 'Looking for matching category...';
-		$has_category = ASAE_CI_Ingester::assign_category( $post_id, $tags, $title, $post_type );
-		if ( $has_category ) {
-			$log[] = 'Category assigned.';
+		// Step 11: Assign category (only for post types that support categories).
+		if ( is_object_in_taxonomy( $post_type, 'category' ) ) {
+			$log[] = 'Looking for matching category...';
+			$has_category = ASAE_CI_Ingester::assign_category( $post_id, $tags, $title, $post_type );
+			if ( $has_category ) {
+				$log[] = 'Category assigned.';
+			} else {
+				$log[] = 'No matching category found — flagged for review.';
+				update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
+			}
 		} else {
-			$log[] = 'No matching category found — flagged for review.';
-			update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
+			$log[] = 'Skipping category — ' . $post_type . ' does not support categories.';
 		}
 
 		// Step 12: Check for sponsor.
