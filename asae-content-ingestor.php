@@ -3,7 +3,7 @@
  * Plugin Name:       ASAE Content Ingestor
  * Plugin URI:        https://keithmsoares.com
  * Description:       Reads an RSS/Atom feed and ingests linked articles as a chosen WordPress post type, preserving title, body, author, date, images, tags, and metadata. Supports a URL restriction prefix to filter feed links. Designed for migrating legacy ASAE sites into WordPress.
- * Version:           1.1.3
+ * Version:           1.2.0
  * Author:            Keith M. Soares
  * Author URI:        https://keithmsoares.com
  * License:           CC
@@ -20,13 +20,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ── Plugin Constants ──────────────────────────────────────────────────────────
 
 /** Semantic version string used throughout the codebase and in the UI. */
-define( 'ASAE_CI_VERSION', '1.1.3' );
+define( 'ASAE_CI_VERSION', '1.2.0' );
 
 /** Absolute path to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_PATH', plugin_dir_path( __FILE__ ) );
 
 /** Public URL to the plugin root directory (with trailing slash). */
 define( 'ASAE_CI_URL', plugin_dir_url( __FILE__ ) );
+
+/** Plugin basename for the updater (e.g. asae-content-ingestor/asae-content-ingestor.php). */
+define( 'ASAE_CI_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 
 /** Unique prefix used for options, hooks, and DB tables. */
 define( 'ASAE_CI_PREFIX', 'asae_ci' );
@@ -53,6 +56,7 @@ $asae_ci_classes = [
 	'class-asae-ci-youtube.php',
 	'class-asae-ci-wp-rest.php',
 	'class-asae-ci-admin.php',
+	'class-github-updater.php',
 ];
 
 foreach ( $asae_ci_classes as $class_file ) {
@@ -110,6 +114,9 @@ function asae_ci_init() {
 	// Serve stored author photos as avatars everywhere WP renders get_avatar().
 	// This works regardless of whether Simple Local Avatars is installed.
 	add_filter( 'pre_get_avatar_data', 'asae_ci_filter_avatar_data', 10, 2 );
+
+	// Self-hosted update checker (GitHub Releases).
+	new ASAE_CI_GitHub_Updater();
 
 	// Initialise the admin UI (menus, AJAX handlers, enqueue hooks).
 	if ( is_admin() ) {

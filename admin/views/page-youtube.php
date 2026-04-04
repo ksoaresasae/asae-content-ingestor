@@ -36,29 +36,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		<span class="asae-ci-version">v<?php echo esc_html( ASAE_CI_VERSION ); ?></span>
 	</h1>
 
-	<nav class="nav-tab-wrapper" aria-label="<?php esc_attr_e( 'Content Ingestor navigation', 'asae-content-ingestor' ); ?>">
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor' ) ); ?>"
-		   class="nav-tab">
-			<?php esc_html_e( 'Run', 'asae-content-ingestor' ); ?>
-		</a>
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=reports' ) ); ?>"
-		   class="nav-tab">
-			<?php esc_html_e( 'Reports', 'asae-content-ingestor' ); ?>
-		</a>
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=youtube' ) ); ?>"
-		   class="nav-tab nav-tab-active"
-		   aria-current="page">
-			<?php esc_html_e( 'YouTube Feed', 'asae-content-ingestor' ); ?>
-		</a>
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=wp-rest' ) ); ?>"
-		   class="nav-tab">
-			<?php esc_html_e( 'WordPress REST API', 'asae-content-ingestor' ); ?>
-		</a>
-		<a href="<?php echo esc_url( admin_url( 'admin.php?page=asae-content-ingestor&tab=cleanup' ) ); ?>"
-		   class="nav-tab">
-			<?php esc_html_e( 'Clean Up', 'asae-content-ingestor' ); ?>
-		</a>
-	</nav>
+	<?php ASAE_CI_Admin::render_nav_tabs( 'youtube' ); ?>
 
 	<p class="asae-ci-intro">
 		<?php esc_html_e( 'Generate a full Atom feed from a YouTube channel so all videos can be ingested via the Run tab. YouTube\'s standard RSS feed is limited to 15 items; this tool fetches every video using the YouTube Data API.', 'asae-content-ingestor' ); ?>

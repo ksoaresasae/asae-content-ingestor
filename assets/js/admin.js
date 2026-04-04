@@ -2014,4 +2014,197 @@
 		} );
 	}
 
+	// ═══════════════════════════════════════════════════════════════════════════
+	// One to One Tab
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	if ( $( '#asae-ci-one-to-one-app' ).length ) {
+
+		var $sourceUrl = $( '#oto-source-url' );
+		var $postType  = $( '#oto-post-type' );
+		var $titleIn   = $( '#oto-title' );
+		var $slugIn    = $( '#oto-slug' );
+		var $slugStat  = $( '#oto-slug-status' );
+		var $runBtn    = $( '#oto-run-btn' );
+		var slugTimer  = null;
+		var slugValid  = false;
+
+		function otoEscHtml( str ) {
+			return $( '<span>' ).text( str ).html();
+		}
+
+		// Generate a slug from the title field.
+		function generateSlug( title ) {
+			return title
+				.toLowerCase()
+				.replace( /[^a-z0-9\s-]/g, '' )
+				.replace( /\s+/g, '-' )
+				.replace( /-+/g, '-' )
+				.replace( /^-|-$/g, '' );
+		}
+
+		// Validate the slug via AJAX.
+		function validateSlug() {
+			var slug = $slugIn.val();
+			if ( ! slug ) {
+				$slugStat.html( '' );
+				$runBtn.prop( 'disabled', true );
+				slugValid = false;
+				return;
+			}
+			$slugStat.html( '<em>Checking...</em>' ).css( 'color', '#666' );
+			$.post( asaeCi.ajaxUrl, {
+				action:    'asae_ci_one_to_one_validate_slug',
+				nonce:     asaeCi.nonce,
+				slug:      slug,
+				post_type: $postType.val()
+			} ).done( function ( resp ) {
+				if ( resp.success && resp.data.available ) {
+					$slugStat.html( '&#10003; Available' ).css( 'color', '#00a32a' );
+					slugValid = true;
+				} else {
+					$slugStat.html( '&#10007; Already in use' ).css( 'color', '#d63638' );
+					slugValid = false;
+				}
+				updateRunBtn();
+			} ).fail( function () {
+				$slugStat.html( 'Error checking slug' ).css( 'color', '#d63638' );
+				slugValid = false;
+				updateRunBtn();
+			} );
+		}
+
+		function updateRunBtn() {
+			var hasUrl  = $sourceUrl.val().trim().length > 0;
+			var hasSlug = $slugIn.val().trim().length > 0;
+			$runBtn.prop( 'disabled', ! ( hasUrl && hasSlug && slugValid ) );
+		}
+
+		// Auto-generate slug when title changes.
+		$titleIn.on( 'input', function () {
+			var slug = generateSlug( $( this ).val() );
+			$slugIn.val( slug );
+			clearTimeout( slugTimer );
+			if ( slug ) {
+				slugTimer = setTimeout( validateSlug, 400 );
+			} else {
+				$slugStat.html( '' );
+				slugValid = false;
+				updateRunBtn();
+			}
+		} );
+
+		// Re-validate when post type changes.
+		$postType.on( 'change', function () {
+			if ( $slugIn.val() ) {
+				validateSlug();
+			}
+		} );
+
+		$sourceUrl.on( 'input', updateRunBtn );
+
+		// Run button.
+		$runBtn.on( 'click', function () {
+			if ( ! slugValid ) {
+				return;
+			}
+
+			var $btn       = $( this ).prop( 'disabled', true ).text( 'Running...' );
+			var $logPanel  = $( '#oto-log-panel' ).removeClass( 'asae-ci-hidden' );
+			var $log       = $( '#oto-log' ).empty();
+			var $resPanel  = $( '#oto-result-panel' ).addClass( 'asae-ci-hidden' );
+			var $result    = $( '#oto-result' ).empty();
+
+			function appendLog( msg ) {
+				var line = $( '<div>' ).text( msg );
+				$log.append( line );
+				$log.scrollTop( $log[0].scrollHeight );
+			}
+
+			appendLog( 'Starting One-to-One ingestion...' );
+
+			$.post( asaeCi.ajaxUrl, {
+				action:     'asae_ci_one_to_one_run',
+				nonce:      asaeCi.nonce,
+				source_url: $sourceUrl.val().trim(),
+				post_type:  $postType.val(),
+				title:      $titleIn.val().trim(),
+				slug:       $slugIn.val().trim(),
+				status:     $( 'input[name="oto-status"]:checked' ).val()
+			} ).done( function ( resp ) {
+				// Display all log lines.
+				var logEntries = resp.data && resp.data.log ? resp.data.log : [];
+				logEntries.forEach( function ( entry ) {
+					var $line = $( '<div>' ).text( entry );
+					if ( entry.indexOf( 'ERROR' ) === 0 ) {
+						$line.css( 'color', '#f87171' );
+					} else if ( entry.indexOf( 'WARNING' ) === 0 ) {
+						$line.css( 'color', '#fbbf24' );
+					} else if ( entry.indexOf( 'DONE' ) === 0 ) {
+						$line.css( 'color', '#4ade80' ).css( 'font-weight', 'bold' );
+					}
+					$log.append( $line );
+				} );
+				$log.scrollTop( $log[0].scrollHeight );
+
+				if ( resp.success && resp.data.post_id ) {
+					$resPanel.removeClass( 'asae-ci-hidden' );
+					$result.html(
+						'<p style="color:#00a32a;font-weight:bold;">&#10003; ' +
+						otoEscHtml( $postType.find( 'option:selected' ).text() ) +
+						' created (ID: ' + resp.data.post_id + ')</p>' +
+						'<p><a href="' + otoEscHtml( resp.data.edit_url ) + '" class="button">Edit</a> ' +
+						'<a href="' + otoEscHtml( resp.data.view_url ) + '" class="button" target="_blank">View</a></p>'
+					);
+				} else {
+					$resPanel.removeClass( 'asae-ci-hidden' );
+					$result.html( '<p style="color:#d63638;font-weight:bold;">Ingestion failed. See log above.</p>' );
+				}
+			} ).fail( function ( jqXHR ) {
+				appendLog( 'ERROR: Network error — ' + jqXHR.statusText );
+				$resPanel.removeClass( 'asae-ci-hidden' );
+				$result.html( '<p style="color:#d63638;">Network error. Check the log.</p>' );
+			} ).always( function () {
+				$btn.prop( 'disabled', false ).text( 'Run Ingestion' );
+			} );
+		} );
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
+	// Settings Tab
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	if ( $( '#asae-ci-settings-app' ).length ) {
+
+		$( '#asae-ci-check-updates-btn' ).on( 'click', function () {
+			var $btn    = $( this ).prop( 'disabled', true );
+			var $result = $( '#asae-ci-update-check-result' );
+			$result.text( 'Checking...' ).css( 'color', '#666' );
+
+			$.post( asaeCi.ajaxUrl, {
+				action: 'asae_ci_check_updates',
+				nonce:  asaeCi.nonce
+			} ).done( function ( resp ) {
+				if ( resp.success ) {
+					var d = resp.data;
+					if ( d.update_available ) {
+						$result.html(
+							'<strong style="color:#d63638;">Update available: v' +
+							$( '<span>' ).text( d.latest_version ).html() +
+							'</strong> &mdash; <a href="' + asaeCi.pluginsUrl + '">Go to Plugins page</a>'
+						).css( 'color', '' );
+					} else {
+						$result.text( 'You are running the latest version.' ).css( 'color', '#00a32a' );
+					}
+				} else {
+					$result.text( 'Error checking for updates.' ).css( 'color', '#d63638' );
+				}
+			} ).fail( function () {
+				$result.text( 'Connection error.' ).css( 'color', '#d63638' );
+			} ).always( function () {
+				$btn.prop( 'disabled', false );
+			} );
+		} );
+	}
+
 } )( jQuery );

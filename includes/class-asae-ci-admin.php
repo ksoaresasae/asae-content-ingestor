@@ -79,6 +79,13 @@ class ASAE_CI_Admin {
 		add_action( 'wp_ajax_asae_ci_set_posts_per_page',    [ __CLASS__, 'ajax_set_posts_per_page' ] );
 		add_action( 'wp_ajax_asae_ci_assign_sponsors',       [ __CLASS__, 'ajax_assign_sponsors' ] );
 
+		// One to One tab.
+		add_action( 'wp_ajax_asae_ci_one_to_one_validate_slug', [ __CLASS__, 'ajax_one_to_one_validate_slug' ] );
+		add_action( 'wp_ajax_asae_ci_one_to_one_run',           [ __CLASS__, 'ajax_one_to_one_run' ] );
+
+		// Settings tab.
+		add_action( 'wp_ajax_asae_ci_check_updates', [ __CLASS__, 'ajax_check_updates' ] );
+
 		// Sponsor taxonomy term meta fields.
 		add_action( 'sponsor_edit_form_fields', [ __CLASS__, 'sponsor_edit_fields' ], 10, 2 );
 		add_action( 'sponsor_add_form_fields',  [ __CLASS__, 'sponsor_add_fields' ] );
@@ -162,6 +169,7 @@ class ASAE_CI_Admin {
 			'nonce'         => wp_create_nonce( self::AJAX_NONCE ),
 			'runningJobKey' => $running_job_key,
 			'sponsorSlugs'  => self::get_sponsor_slugs(),
+			'pluginsUrl'    => admin_url( 'plugins.php' ),
 			'strings'       => [
 				'startingJob'    => __( 'Starting job…', 'asae-content-ingestor' ),
 				'discovering'    => __( 'Reading RSS feed…', 'asae-content-ingestor' ),
@@ -207,7 +215,7 @@ class ASAE_CI_Admin {
 		}
 
 		$active_tab = sanitize_key( $_GET['tab'] ?? 'run' );
-		if ( ! in_array( $active_tab, [ 'run', 'reports', 'youtube', 'wp-rest', 'cleanup' ], true ) ) {
+		if ( ! in_array( $active_tab, [ 'run', 'one-to-one', 'reports', 'youtube', 'wp-rest', 'cleanup', 'settings' ], true ) ) {
 			$active_tab = 'run';
 		}
 
@@ -246,6 +254,12 @@ class ASAE_CI_Admin {
 		} elseif ( 'cleanup' === $active_tab ) {
 			// Clean Up tab.
 			$view = ASAE_CI_PATH . 'admin/views/page-cleanup.php';
+		} elseif ( 'one-to-one' === $active_tab ) {
+			// One to One tab.
+			$view = ASAE_CI_PATH . 'admin/views/page-one-to-one.php';
+		} elseif ( 'settings' === $active_tab ) {
+			// Settings tab.
+			$view = ASAE_CI_PATH . 'admin/views/page-settings.php';
 		} else {
 			// Run tab (default).
 			$active_tab           = 'run';
@@ -260,7 +274,35 @@ class ASAE_CI_Admin {
 		}
 	}
 
-	// ── AJAX Handlers ─────────────────────────────────────────────────────────
+	/**
+	 * Renders the shared navigation tab bar.
+	 *
+	 * @param string $active The currently active tab key.
+	 */
+	public static function render_nav_tabs( string $active ): void {
+		$tabs = [
+			'run'        => __( 'General Run', 'asae-content-ingestor' ),
+			'one-to-one' => __( 'One to One', 'asae-content-ingestor' ),
+			'youtube'    => __( 'YouTube Feed', 'asae-content-ingestor' ),
+			'wp-rest'    => __( 'WordPress REST API', 'asae-content-ingestor' ),
+			'cleanup'    => __( 'Clean Up', 'asae-content-ingestor' ),
+			'reports'    => __( 'Reports', 'asae-content-ingestor' ),
+			'settings'   => __( 'Settings', 'asae-content-ingestor' ),
+		];
+
+		echo '<nav class="nav-tab-wrapper" aria-label="' . esc_attr__( 'Content Ingestor navigation', 'asae-content-ingestor' ) . '">';
+		foreach ( $tabs as $key => $label ) {
+			$url   = 'run' === $key
+				? admin_url( 'admin.php?page=asae-content-ingestor' )
+				: admin_url( 'admin.php?page=asae-content-ingestor&tab=' . $key );
+			$class = 'nav-tab' . ( $key === $active ? ' nav-tab-active' : '' );
+			$aria  = $key === $active ? ' aria-current="page"' : '';
+			echo '<a href="' . esc_url( $url ) . '" class="' . $class . '"' . $aria . '>' . esc_html( $label ) . '</a>';
+		}
+		echo '</nav>';
+	}
+
+	// ── AJAX Handlers ──────────��────────────────────────────��─────────────────
 
 	/**
 	 * AJAX: Creates and starts a new crawl+ingest job.
@@ -867,7 +909,7 @@ class ASAE_CI_Admin {
 	 *
 	 * @return WP_Post_Type[] Array of WP_Post_Type objects keyed by slug.
 	 */
-	private static function get_eligible_post_types(): array {
+	public static function get_eligible_post_types(): array {
 		return get_post_types(
 			[
 				'public'             => true,
@@ -1741,6 +1783,347 @@ class ASAE_CI_Admin {
 			'posts_matched'  => $posts_matched,
 			'posts_assigned' => $posts_assigned,
 			'status'         => 'processed',
+		] );
+	}
+
+	// ── One to One Tab AJAX Handlers ──────────────────────────────────────────
+
+	/**
+	 * AJAX: Validates that a slug is available for the given post type.
+	 */
+	public static function ajax_one_to_one_validate_slug(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$slug      = sanitize_title( $_POST['slug'] ?? '' );
+		$post_type = sanitize_key( $_POST['post_type'] ?? 'post' );
+
+		if ( ! $slug ) {
+			wp_send_json_error( 'Empty slug.' );
+		}
+
+		// Check if a post/page with this slug already exists.
+		global $wpdb;
+		$exists = (bool) $wpdb->get_var( $wpdb->prepare(
+			"SELECT ID FROM {$wpdb->posts} WHERE post_name = %s AND post_type = %s AND post_status IN ('publish','draft','pending','private') LIMIT 1",
+			$slug,
+			$post_type
+		) );
+
+		wp_send_json_success( [
+			'slug'      => $slug,
+			'available' => ! $exists,
+		] );
+	}
+
+	/**
+	 * AJAX: Runs a single One-to-One ingestion with verbose step-by-step output.
+	 *
+	 * Returns a structured response with a log array of every step taken.
+	 */
+	public static function ajax_one_to_one_run(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		$source_url     = esc_url_raw( wp_unslash( $_POST['source_url'] ?? '' ) );
+		$post_type      = sanitize_key( $_POST['post_type'] ?? 'post' );
+		$custom_title   = sanitize_text_field( wp_unslash( $_POST['title'] ?? '' ) );
+		$custom_slug    = sanitize_title( $_POST['slug'] ?? '' );
+		$desired_status = sanitize_key( $_POST['status'] ?? 'draft' );
+
+		$log = [];
+
+		if ( ! $source_url ) {
+			wp_send_json_error( [ 'log' => [ 'ERROR: No source URL provided.' ] ] );
+		}
+
+		// Step 1: Fetch the source page.
+		$log[] = 'Fetching source URL: ' . $source_url;
+
+		$response = wp_remote_get( $source_url, [
+			'timeout'    => 30,
+			'user-agent' => 'ASAE-Content-Ingestor/' . ASAE_CI_VERSION,
+		] );
+
+		if ( is_wp_error( $response ) ) {
+			$log[] = 'ERROR: Failed to fetch URL — ' . $response->get_error_message();
+			wp_send_json_error( [ 'log' => $log ] );
+		}
+
+		$http_code = wp_remote_retrieve_response_code( $response );
+		$log[] = 'HTTP response: ' . $http_code;
+
+		if ( 200 !== $http_code ) {
+			$log[] = 'ERROR: Non-200 response code. Aborting.';
+			wp_send_json_error( [ 'log' => $log ] );
+		}
+
+		$html = wp_remote_retrieve_body( $response );
+		$log[] = 'Received ' . number_format( strlen( $html ) ) . ' bytes of HTML.';
+
+		// Step 2: Parse the HTML.
+		$log[] = 'Parsing HTML for article data...';
+		$parsed = ASAE_CI_Parser::parse( $source_url, $html );
+
+		$log[] = 'Title: ' . ( $parsed['title'] ?: '(none found)' );
+		$log[] = 'Date: ' . ( $parsed['date'] ?: '(none found)' );
+
+		// Report authors.
+		$authors = $parsed['authors'] ?? [];
+		if ( empty( $authors ) && ! empty( $parsed['author'] ) ) {
+			$authors = [ $parsed['author'] ];
+		}
+		$log[] = 'Authors: ' . ( $authors ? implode( ', ', $authors ) : '(none found)' );
+		$log[] = 'Tags: ' . ( ! empty( $parsed['tags'] ) ? implode( ', ', $parsed['tags'] ) : '(none found)' );
+		$log[] = 'Featured image: ' . ( $parsed['featured_image'] ?: '(none found)' );
+		$log[] = 'Inline images: ' . count( $parsed['inline_images'] ?? [] );
+		$log[] = 'Excerpt: ' . ( $parsed['excerpt'] ? mb_substr( $parsed['excerpt'], 0, 80 ) . '...' : '(none found)' );
+
+		// Step 3: Check for duplicate.
+		$log[] = 'Checking for duplicate source URL...';
+		if ( ASAE_CI_Ingester::is_duplicate( $source_url ) ) {
+			$log[] = 'WARNING: A post with this source URL already exists.';
+			wp_send_json_error( [ 'log' => $log ] );
+		}
+		$log[] = 'No duplicate found.';
+
+		// Step 4: Override title/slug if provided.
+		if ( $custom_title ) {
+			$parsed['title'] = $custom_title;
+			$log[] = 'Overriding title with: ' . $custom_title;
+		}
+
+		$title = sanitize_text_field( $parsed['title'] ?? '' ) ?: __( '(Untitled)', 'asae-content-ingestor' );
+		$log[] = 'Final title: ' . $title;
+
+		// Step 5: Build the post.
+		$log[] = 'Creating ' . $post_type . '...';
+
+		$content = wp_kses_post( $parsed['content'] ?? '' );
+		$date    = $parsed['date'] ?? '';
+		$excerpt = sanitize_textarea_field( $parsed['excerpt'] ?? '' );
+
+		$post_arr = [
+			'post_title'   => $title,
+			'post_content' => $content,
+			'post_status'  => $desired_status,
+			'post_type'    => $post_type,
+		];
+
+		if ( $custom_slug ) {
+			$post_arr['post_name'] = $custom_slug;
+			$log[] = 'Using custom slug: ' . $custom_slug;
+		}
+
+		if ( $excerpt ) {
+			$post_arr['post_excerpt'] = $excerpt;
+		}
+
+		// Apply publication date if one was found (regardless of draft/publish choice).
+		if ( $date ) {
+			$post_arr['post_date']     = $date;
+			$post_arr['post_date_gmt'] = get_gmt_from_date( $date );
+			$log[] = 'Setting publish date to: ' . $date;
+		}
+
+		// Step 6: Process authors.
+		$author_ids = [];
+		foreach ( $authors as $idx => $author_name ) {
+			$author_name = sanitize_text_field( $author_name );
+			if ( empty( $author_name ) ) {
+				continue;
+			}
+			$log[] = 'Processing author: ' . $author_name;
+			$bio_url   = 0 === $idx ? ( $parsed['author_bio_url']   ?? '' ) : '';
+			$bio_text  = 0 === $idx ? ( $parsed['author_bio']       ?? '' ) : '';
+			$photo_url = 0 === $idx ? ( $parsed['author_photo_url'] ?? '' ) : '';
+			$aid = ASAE_CI_Ingester::get_or_create_author_user(
+				$author_name,
+				$bio_url,
+				sanitize_textarea_field( $bio_text ),
+				$photo_url
+			);
+			if ( $aid ) {
+				$author_ids[] = $aid;
+				$log[] = 'Author resolved to user ID: ' . $aid;
+			}
+		}
+		if ( ! empty( $author_ids ) ) {
+			$post_arr['post_author'] = $author_ids[0];
+		}
+
+		// Step 7: Insert the post.
+		$post_id = wp_insert_post( $post_arr, true );
+		if ( is_wp_error( $post_id ) ) {
+			$log[] = 'ERROR: Failed to create post — ' . $post_id->get_error_message();
+			wp_send_json_error( [ 'log' => $log ] );
+		}
+		$log[] = 'Created ' . $post_type . ' ID: ' . $post_id;
+
+		// Co-Authors Plus integration.
+		if ( ! empty( $author_ids ) && ASAE_CI_Ingester::cap_is_active() ) {
+			global $coauthors_plus;
+			$coauthor_logins = [];
+			foreach ( $author_ids as $aid ) {
+				$author_user = get_user_by( 'id', $aid );
+				if ( $author_user ) {
+					$coauthor_logins[] = $author_user->user_login;
+				}
+			}
+			if ( ! empty( $coauthor_logins ) ) {
+				$coauthors_plus->add_coauthors( $post_id, $coauthor_logins, false );
+				$log[] = 'Assigned Co-Authors Plus: ' . implode( ', ', $coauthor_logins );
+			}
+		}
+
+		// Step 8: Store source URL meta.
+		update_post_meta( $post_id, '_asae_ci_source_url', esc_url_raw( $source_url ) );
+		$log[] = 'Stored source URL as post meta.';
+
+		// Step 9: Assign tags.
+		$tags = array_values( array_unique( array_filter( $parsed['tags'] ?? [] ) ) );
+		if ( ! empty( $tags ) ) {
+			$taxonomy = ( 'post' === $post_type ) ? 'post_tag' : 'post_tag';
+			wp_set_object_terms( $post_id, $tags, $taxonomy, true );
+			$log[] = 'Assigned ' . count( $tags ) . ' tags: ' . implode( ', ', $tags );
+		}
+
+		// Step 10: Process images.
+		$featured_url  = $parsed['featured_image'] ?? '';
+		$inline_images = $parsed['inline_images']  ?? [];
+		$body_content  = $content;
+
+		if ( $featured_url ) {
+			$feat_base     = ASAE_CI_Ingester::normalize_image_base( $featured_url );
+			$body_content  = ASAE_CI_Ingester::remove_featured_image_from_content( $body_content, $featured_url );
+			$inline_images = array_values( array_filter(
+				$inline_images,
+				fn( $img_url ) => ASAE_CI_Ingester::normalize_image_base( $img_url ) !== $feat_base
+			) );
+		}
+
+		if ( ! empty( $inline_images ) ) {
+			$log[] = 'Downloading ' . count( $inline_images ) . ' inline images...';
+			$updated_content = ASAE_CI_Ingester::process_inline_images( $post_id, $body_content, $inline_images );
+			if ( $updated_content !== $content ) {
+				wp_update_post( [
+					'ID'           => $post_id,
+					'post_content' => $updated_content,
+				] );
+				$log[] = 'Inline images downloaded and content updated.';
+			}
+		}
+
+		if ( $featured_url ) {
+			$log[] = 'Downloading featured image: ' . $featured_url;
+			$attachment_id = ASAE_CI_Ingester::download_and_attach_image( $featured_url, $post_id, $title );
+			if ( $attachment_id && ! is_wp_error( $attachment_id ) ) {
+				set_post_thumbnail( $post_id, $attachment_id );
+				$log[] = 'Featured image set (attachment ID: ' . $attachment_id . ').';
+			} else {
+				$log[] = 'WARNING: Failed to download featured image.';
+			}
+		}
+
+		// Step 11: Assign category.
+		$log[] = 'Looking for matching category...';
+		$has_category = ASAE_CI_Ingester::assign_category( $post_id, $tags, $title, $post_type );
+		if ( $has_category ) {
+			$log[] = 'Category assigned.';
+		} else {
+			$log[] = 'No matching category found — flagged for review.';
+			update_post_meta( $post_id, '_asae_ci_needs_category', 1 );
+		}
+
+		// Step 12: Check for sponsor.
+		$log[] = 'Checking for sponsor metadata...';
+		$sponsor_parsed = self::parse_sponsor_meta( $html, '' );
+		if ( $sponsor_parsed['name'] ) {
+			$sponsor_slug = sanitize_title( $sponsor_parsed['name'] );
+			$log[] = 'Sponsor found: ' . $sponsor_parsed['name'];
+			$existing = term_exists( $sponsor_slug, 'sponsor' );
+			if ( $existing ) {
+				$sponsor_term_id = (int) ( is_array( $existing ) ? $existing['term_id'] : $existing );
+			} else {
+				$result = wp_insert_term( $sponsor_parsed['name'], 'sponsor', [ 'slug' => $sponsor_slug ] );
+				$sponsor_term_id = is_array( $result ) ? (int) $result['term_id'] : 0;
+				if ( $sponsor_term_id ) {
+					$log[] = 'Created new sponsor term: ' . $sponsor_parsed['name'];
+				}
+			}
+			if ( $sponsor_term_id ) {
+				wp_set_object_terms( $post_id, [ $sponsor_term_id ], 'sponsor', true );
+				$log[] = 'Sponsor term assigned to post.';
+
+				// Download sponsor logo if we have one and the term doesn't already.
+				if ( $sponsor_parsed['logo_url'] && ! get_term_meta( $sponsor_term_id, 'sponsor_logo', true ) ) {
+					$logo_id = ASAE_CI_Ingester::download_and_attach_image(
+						$sponsor_parsed['logo_url'],
+						0,
+						$sponsor_parsed['name'] . ' Logo'
+					);
+					if ( $logo_id && ! is_wp_error( $logo_id ) ) {
+						update_term_meta( $sponsor_term_id, 'sponsor_logo', (int) $logo_id );
+						$log[] = 'Sponsor logo downloaded and saved.';
+					}
+				}
+			}
+		} else {
+			$log[] = 'No sponsor metadata found.';
+		}
+
+		// Step 13: Register redirect.
+		$log[] = 'Registering redirect from source URL...';
+		ASAE_CI_Ingester::maybe_register_redirect( $post_id, $source_url, 'replace' );
+		$log[] = 'Redirect registered.';
+
+		// Done.
+		$edit_url = get_edit_post_link( $post_id, 'raw' );
+		$view_url = get_permalink( $post_id );
+		$log[] = 'DONE: ' . ucfirst( $post_type ) . ' created successfully.';
+
+		wp_send_json_success( [
+			'log'      => $log,
+			'post_id'  => $post_id,
+			'edit_url' => $edit_url,
+			'view_url' => $view_url,
+		] );
+	}
+
+	// ── Settings Tab AJAX Handlers ────────────────────────────────────────────
+
+	/**
+	 * AJAX: Clears cached GitHub release data and checks for plugin updates.
+	 */
+	public static function ajax_check_updates(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( 'Permission denied.' );
+		}
+
+		// Clear cached release data.
+		delete_transient( 'asae_ci_github_release' );
+		delete_site_transient( 'update_plugins' );
+
+		// Fetch fresh release data.
+		$updater = new ASAE_CI_GitHub_Updater();
+		$release = $updater->get_latest_release();
+
+		// Trigger WordPress update check.
+		wp_update_plugins();
+
+		$latest_version = $release && isset( $release->tag_name )
+			? ltrim( $release->tag_name, 'vV' )
+			: null;
+
+		wp_send_json_success( [
+			'current_version' => ASAE_CI_VERSION,
+			'latest_version'  => $latest_version,
+			'update_available' => $latest_version && version_compare( $latest_version, ASAE_CI_VERSION, '>' ),
 		] );
 	}
 

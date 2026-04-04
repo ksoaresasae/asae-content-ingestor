@@ -298,7 +298,7 @@ class ASAE_CI_Ingester {
 	 * @param string $url Absolute image URL.
 	 * @return string Normalised base URL.
 	 */
-	private static function normalize_image_base( string $url ): string {
+	public static function normalize_image_base( string $url ): string {
 		$base = strtok( $url, '?#' ); // Strip query string and fragment.
 		// Strip WordPress image size suffix: -NNNxNNN before the file extension.
 		return (string) preg_replace( '/-\d+x\d+(\.[a-zA-Z]{2,5})$/', '$1', $base );
@@ -318,7 +318,7 @@ class ASAE_CI_Ingester {
 	 * @param string $featured_url Absolute URL of the featured image.
 	 * @return string Updated content HTML with duplicate images removed.
 	 */
-	private static function remove_featured_image_from_content( string $content, string $featured_url ): string {
+	public static function remove_featured_image_from_content( string $content, string $featured_url ): string {
 		if ( empty( $content ) || empty( $featured_url ) ) {
 			return $content;
 		}
@@ -377,7 +377,7 @@ class ASAE_CI_Ingester {
 	 * @param string[] $image_urls    Absolute URLs of images found in the content.
 	 * @return string Updated content HTML with src attributes replaced.
 	 */
-	private static function process_inline_images( int $post_id, string $content, array $image_urls ): string {
+	public static function process_inline_images( int $post_id, string $content, array $image_urls ): string {
 		if ( empty( $image_urls ) || empty( $content ) ) {
 			return $content;
 		}
@@ -565,7 +565,7 @@ class ASAE_CI_Ingester {
 	 * @param string   $post_type Post type (used to identify the correct taxonomy).
 	 * @return bool True if a category was matched and assigned; false if no match.
 	 */
-	private static function assign_category( int $post_id, array $tags, string $title, string $post_type ): bool {
+	public static function assign_category( int $post_id, array $tags, string $title, string $post_type ): bool {
 		$match = self::find_category_match( $tags, $title, $post_type );
 		if ( null === $match ) {
 			return false;
@@ -731,7 +731,7 @@ class ASAE_CI_Ingester {
 	 * @param string $photo_url URL to the author's photo (may be empty).
 	 * @return int WP user ID, or 0 on failure / no name.
 	 */
-	private static function get_or_create_author_user( string $name, string $bio_url, string $bio_text, string $photo_url ): int {
+	public static function get_or_create_author_user( string $name, string $bio_url, string $bio_text, string $photo_url ): int {
 		if ( empty( $name ) ) {
 			return 0;
 		}
@@ -1151,7 +1151,7 @@ class ASAE_CI_Ingester {
 	 * @param string $source_type 'replace' or 'mirror'.
 	 * @return void
 	 */
-	private static function maybe_register_redirect( int $post_id, string $source_url, string $source_type ): void {
+	public static function maybe_register_redirect( int $post_id, string $source_url, string $source_type ): void {
 		if ( 'mirror' === $source_type ) {
 			update_post_meta( $post_id, '_asae_ci_mirror_url', esc_url_raw( $source_url ) );
 			return;
