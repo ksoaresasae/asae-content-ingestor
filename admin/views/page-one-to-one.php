@@ -53,6 +53,23 @@ $post_types = ASAE_CI_Admin::get_eligible_post_types();
 					</select>
 				</td>
 			</tr>
+			<tr id="oto-parent-row" style="display:none;">
+				<th scope="row">
+					<label for="oto-parent"><?php esc_html_e( 'Parent', 'asae-content-ingestor' ); ?></label>
+				</th>
+				<td>
+					<?php
+					wp_dropdown_pages( [
+						'name'              => 'oto-parent',
+						'id'                => 'oto-parent',
+						'show_option_none'  => __( '(no parent)', 'asae-content-ingestor' ),
+						'option_none_value' => '0',
+						'sort_column'       => 'menu_order, post_title',
+					] );
+					?>
+					<p class="description"><?php esc_html_e( 'Optional. Select a parent page to nest this page under.', 'asae-content-ingestor' ); ?></p>
+				</td>
+			</tr>
 			<tr>
 				<th scope="row">
 					<label for="oto-title"><?php esc_html_e( 'Title', 'asae-content-ingestor' ); ?></label>

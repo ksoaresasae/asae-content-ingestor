@@ -2026,8 +2026,22 @@
 		var $slugIn    = $( '#oto-slug' );
 		var $slugStat  = $( '#oto-slug-status' );
 		var $runBtn    = $( '#oto-run-btn' );
+		var $parentRow = $( '#oto-parent-row' );
+		var $parent    = $( '#oto-parent' );
 		var slugTimer  = null;
 		var slugValid  = false;
+
+		// Show/hide parent dropdown based on post type.
+		function toggleParentRow() {
+			if ( $postType.val() === 'page' ) {
+				$parentRow.show();
+			} else {
+				$parentRow.hide();
+				$parent.val( '0' );
+			}
+		}
+		$postType.on( 'change', toggleParentRow );
+		toggleParentRow();
 
 		function otoEscHtml( str ) {
 			return $( '<span>' ).text( str ).html();
@@ -2130,7 +2144,8 @@
 				post_type:  $postType.val(),
 				title:      $titleIn.val().trim(),
 				slug:       $slugIn.val().trim(),
-				status:     $( 'input[name="oto-status"]:checked' ).val()
+				status:     $( 'input[name="oto-status"]:checked' ).val(),
+				parent:     $parent.val() || '0'
 			} ).done( function ( resp ) {
 				// Display all log lines.
 				var logEntries = resp.data && resp.data.log ? resp.data.log : [];

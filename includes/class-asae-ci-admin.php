@@ -1830,6 +1830,7 @@ class ASAE_CI_Admin {
 		$custom_title   = sanitize_text_field( wp_unslash( $_POST['title'] ?? '' ) );
 		$custom_slug    = sanitize_title( $_POST['slug'] ?? '' );
 		$desired_status = sanitize_key( $_POST['status'] ?? 'draft' );
+		$parent_id      = (int) ( $_POST['parent'] ?? 0 );
 
 		$log = [];
 
@@ -1913,6 +1914,12 @@ class ASAE_CI_Admin {
 		if ( $custom_slug ) {
 			$post_arr['post_name'] = $custom_slug;
 			$log[] = 'Using custom slug: ' . $custom_slug;
+		}
+
+		if ( $parent_id > 0 ) {
+			$post_arr['post_parent'] = $parent_id;
+			$parent_title = get_the_title( $parent_id );
+			$log[] = 'Setting parent page: ' . $parent_title . ' (ID: ' . $parent_id . ')';
 		}
 
 		if ( $excerpt ) {
