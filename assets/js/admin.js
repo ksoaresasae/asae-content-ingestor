@@ -28,6 +28,64 @@
 ( function ( $ ) {
 	'use strict';
 
+	// ── Content Areas Picker (shared across tabs) ────────────────────────────
+	// Handles the "Add" button on every .asae-ci-content-areas-picker instance
+	// to create new Content Area terms via AJAX and append them to the select.
+
+	$( document ).on( 'click', '.asae-ci-ca-add-btn', function () {
+		var $btn       = $( this );
+		var targetId   = $btn.data( 'target' );
+		var nameId     = $btn.data( 'name-input' );
+		var parentId   = $btn.data( 'parent-input' );
+		var msgId      = $btn.data( 'msg' );
+		var $select    = $( '#' + targetId );
+		var $nameInput = $( '#' + nameId );
+		var $parentSel = $( '#' + parentId );
+		var $msg       = $( '#' + msgId );
+		var name       = $.trim( $nameInput.val() );
+		var parentVal  = parseInt( $parentSel.val(), 10 ) || 0;
+
+		if ( ! name ) {
+			$msg.text( 'Name required' ).css( 'color', '#d63638' );
+			return;
+		}
+
+		$btn.prop( 'disabled', true );
+		$msg.text( 'Adding…' ).css( 'color', '#666' );
+
+		$.post( asaeCi.ajaxUrl, {
+			action: 'asae_ci_create_content_area',
+			nonce:  asaeCi.nonce,
+			name:   name,
+			parent: parentVal
+		} ).done( function ( resp ) {
+			if ( resp.success && resp.data && resp.data.term_id ) {
+				var indent = '';
+				for ( var i = 0; i < ( resp.data.depth || 0 ); i++ ) {
+					indent += '— ';
+				}
+				var label  = indent + resp.data.name;
+				var $opt   = $( '<option>' ).val( resp.data.term_id ).text( label ).prop( 'selected', true );
+				$select.append( $opt );
+				// Also append to the parent dropdown so it can be picked as parent for the next add.
+				$parentSel.append( $( '<option>' ).val( resp.data.term_id ).text( label ) );
+				// Append to any other pickers on the page so they stay in sync.
+				$( '.asae-ci-ca-select' ).not( $select ).each( function () {
+					$( this ).append( $( '<option>' ).val( resp.data.term_id ).text( label ) );
+				} );
+				$nameInput.val( '' );
+				$msg.text( 'Added.' ).css( 'color', '#00a32a' );
+			} else {
+				var err = ( resp.data && resp.data.message ) ? resp.data.message : 'Error';
+				$msg.text( err ).css( 'color', '#d63638' );
+			}
+		} ).fail( function () {
+			$msg.text( 'Network error' ).css( 'color', '#d63638' );
+		} ).always( function () {
+			$btn.prop( 'disabled', false );
+		} );
+	} );
+
 	// ── Cached DOM references ────────────────────────────────────────────────
 
 	var $form             = $( '#asae-ci-run-form' );
@@ -226,19 +284,22 @@
 		setSubmitBusy( true );
 		resetProgressUI();
 
+		var contentAreaIds = $( '#asae-ci-ca-general-run' ).val() || [];
+
 		$.ajax( {
 			url    : asaeCi.ajaxUrl,
 			method : 'POST',
 			data   : {
-				action          : 'asae_ci_start_job',
-				nonce           : asaeCi.nonce,
-				source_url      : sourceUrl,
-				url_restriction : $.trim( $( '#asae-ci-url-restriction' ).val() ) || '',
-				additional_tags : $.trim( $( '#asae-ci-additional-tags' ).val() ) || '',
-				post_type       : $( '#asae-ci-post-type' ).val(),
-				batch_limit     : $( 'input[name="batch_limit"]:checked' ).val() || '50',
-				run_type        : $( 'input[name="run_type"]:checked' ).val()    || 'dry',
-				source_type     : $( 'input[name="source_type"]:checked' ).val() || 'replace',
+				action            : 'asae_ci_start_job',
+				nonce             : asaeCi.nonce,
+				source_url        : sourceUrl,
+				url_restriction   : $.trim( $( '#asae-ci-url-restriction' ).val() ) || '',
+				additional_tags   : $.trim( $( '#asae-ci-additional-tags' ).val() ) || '',
+				post_type         : $( '#asae-ci-post-type' ).val(),
+				batch_limit       : $( 'input[name="batch_limit"]:checked' ).val() || '50',
+				run_type          : $( 'input[name="run_type"]:checked' ).val()    || 'dry',
+				source_type       : $( 'input[name="source_type"]:checked' ).val() || 'replace',
+				content_area_ids  : contentAreaIds,
 			},
 		} )
 		.done( function ( response ) {
@@ -2012,6 +2073,170 @@
 
 			processSponsor();
 		} );
+
+		// ── Bulk Assign Content Areas ────────────────────────────────────────
+
+		var $bulkStartBtn  = $( '#asae-ci-bulk-areas-start-btn' );
+		var $bulkCancelBtn = $( '#asae-ci-bulk-areas-cancel-btn' );
+		var $bulkResumeBan = $( '#asae-ci-bulk-areas-resume-banner' );
+		var $bulkResumeBtn = $( '#asae-ci-bulk-areas-resume-btn' );
+		var $bulkProgress  = $( '#asae-ci-bulk-areas-progress' );
+		var $bulkBar       = $( '#asae-ci-bulk-areas-bar' );
+		var $bulkBarWrap   = $( '#asae-ci-bulk-areas-bar-wrap' );
+		var $bulkStatus    = $( '#asae-ci-bulk-areas-status' );
+		var $bulkProcessed = $( '#asae-ci-bulk-areas-processed' );
+		var $bulkTotal     = $( '#asae-ci-bulk-areas-total' );
+		var $bulkFailed    = $( '#asae-ci-bulk-areas-failed' );
+		var $bulkResult    = $( '#asae-ci-bulk-areas-result' );
+		var $bulkKeepAlive = $( '#asae-ci-bulk-areas-keep-alive' );
+
+		var bulkJobKey   = '';
+		var bulkPollTmr  = null;
+		var bulkBusy     = false;
+		var bulkWakeLock = null;
+		var bulkHeartTmr = null;
+
+		// Show resume banner if a bulk-assign job is already running on page load.
+		if ( asaeCi.runningBulkAssignJobKey ) {
+			$bulkResumeBan.removeClass( 'asae-ci-hidden' );
+		}
+
+		function bulkActivateKeepAlive() {
+			if ( 'wakeLock' in navigator && ! bulkWakeLock ) {
+				navigator.wakeLock.request( 'screen' ).then( function ( lock ) {
+					bulkWakeLock = lock;
+					lock.addEventListener( 'release', function () { bulkWakeLock = null; } );
+				} ).catch( function () {} );
+			}
+			if ( ! bulkHeartTmr ) {
+				bulkHeartTmr = setInterval( function () {
+					$.post( asaeCi.ajaxUrl, { action: 'heartbeat', _nonce: asaeCi.nonce, data: {} } );
+				}, 60000 );
+			}
+		}
+		function bulkDeactivateKeepAlive() {
+			if ( bulkWakeLock ) { bulkWakeLock.release(); bulkWakeLock = null; }
+			if ( bulkHeartTmr ) { clearInterval( bulkHeartTmr ); bulkHeartTmr = null; }
+		}
+
+		function bulkUpdateProgress( data ) {
+			$bulkProcessed.text( data.processed || 0 );
+			$bulkTotal.text( data.total || 0 );
+			$bulkFailed.text( data.failed || 0 );
+			var pct = data.total > 0 ? Math.min( 100, Math.round( ( data.processed / data.total ) * 100 ) ) : 0;
+			$bulkBar.css( 'width', pct + '%' );
+			$bulkBarWrap.attr( 'aria-valuenow', pct );
+			$bulkStatus.text( data.is_complete ? 'Complete' : ( 'Running… ' + pct + '%' ) );
+		}
+
+		function bulkPollLoop() {
+			if ( bulkBusy || ! bulkJobKey ) { return; }
+			bulkBusy = true;
+			$.post( asaeCi.ajaxUrl, {
+				action:  'asae_ci_bulk_assign_areas_process',
+				nonce:   asaeCi.nonce,
+				job_key: bulkJobKey
+			} ).done( function ( resp ) {
+				bulkBusy = false;
+				if ( ! resp.success ) {
+					$bulkStatus.text( 'Error: ' + ( resp.data && resp.data.message ? resp.data.message : 'Unknown' ) ).css( 'color', '#d63638' );
+					return;
+				}
+				bulkUpdateProgress( resp.data );
+				if ( resp.data.is_complete ) {
+					clearTimeout( bulkPollTmr );
+					$bulkStartBtn.prop( 'disabled', false );
+					$bulkCancelBtn.addClass( 'asae-ci-hidden' );
+					$bulkResult.removeClass( 'asae-ci-hidden' ).html(
+						'<p style="color:#00a32a;"><strong>&#10003; Done.</strong> ' +
+						resp.data.processed + ' processed, ' + resp.data.failed + ' failed.</p>'
+					);
+					bulkDeactivateKeepAlive();
+				} else {
+					bulkPollTmr = setTimeout( bulkPollLoop, 2000 );
+				}
+			} ).fail( function () {
+				bulkBusy = false;
+				bulkPollTmr = setTimeout( bulkPollLoop, 5000 );
+			} );
+		}
+
+		$bulkStartBtn.on( 'click', function () {
+			var targets = $( '#asae-ci-ca-cleanup-bulk' ).val() || [];
+			if ( ! targets.length ) {
+				alert( 'Select at least one Content Area to assign.' );
+				return;
+			}
+			var postType = $( '#asae-ci-bulk-areas-post-type' ).val();
+			var filter   = $( 'input[name="asae-ci-bulk-areas-filter"]:checked' ).val();
+			var filterTerm = parseInt( $( '#asae-ci-bulk-areas-filter-term' ).val(), 10 ) || 0;
+
+			if ( filter === 'has_term' && ! filterTerm ) {
+				alert( 'Select a Content Area to filter by.' );
+				return;
+			}
+
+			if ( ! confirm( 'This will replace Content Areas on every matching ' + postType + '. Continue?' ) ) {
+				return;
+			}
+
+			$bulkStartBtn.prop( 'disabled', true );
+			$bulkResult.addClass( 'asae-ci-hidden' ).empty();
+			$bulkProgress.removeClass( 'asae-ci-hidden' );
+
+			if ( $bulkKeepAlive.is( ':checked' ) ) {
+				bulkActivateKeepAlive();
+			}
+
+			$.post( asaeCi.ajaxUrl, {
+				action:      'asae_ci_bulk_assign_areas_start',
+				nonce:       asaeCi.nonce,
+				post_type:   postType,
+				filter_mode: filter,
+				filter_term: filterTerm,
+				target_ids:  targets
+			} ).done( function ( resp ) {
+				if ( ! resp.success ) {
+					$bulkStatus.text( 'Error: ' + ( resp.data && resp.data.message ? resp.data.message : 'Unknown' ) ).css( 'color', '#d63638' );
+					$bulkStartBtn.prop( 'disabled', false );
+					bulkDeactivateKeepAlive();
+					return;
+				}
+				bulkJobKey = resp.data.job_key;
+				$bulkCancelBtn.removeClass( 'asae-ci-hidden' );
+				bulkPollLoop();
+			} ).fail( function () {
+				$bulkStatus.text( 'Network error starting job.' ).css( 'color', '#d63638' );
+				$bulkStartBtn.prop( 'disabled', false );
+				bulkDeactivateKeepAlive();
+			} );
+		} );
+
+		$bulkResumeBtn.on( 'click', function () {
+			bulkJobKey = asaeCi.runningBulkAssignJobKey;
+			$bulkResumeBan.addClass( 'asae-ci-hidden' );
+			$bulkProgress.removeClass( 'asae-ci-hidden' );
+			$bulkStartBtn.prop( 'disabled', true );
+			$bulkCancelBtn.removeClass( 'asae-ci-hidden' );
+			bulkPollLoop();
+		} );
+
+		$bulkCancelBtn.on( 'click', function () {
+			if ( ! bulkJobKey ) { return; }
+			if ( ! confirm( 'Cancel this bulk-assign job?' ) ) { return; }
+			$.post( asaeCi.ajaxUrl, {
+				action:  'asae_ci_cancel_job',
+				nonce:   asaeCi.nonce,
+				job_key: bulkJobKey
+			} ).always( function () {
+				clearTimeout( bulkPollTmr );
+				bulkJobKey = '';
+				$bulkStartBtn.prop( 'disabled', false );
+				$bulkCancelBtn.addClass( 'asae-ci-hidden' );
+				$bulkStatus.text( 'Cancelled.' );
+				bulkDeactivateKeepAlive();
+			} );
+		} );
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -2144,8 +2369,9 @@
 				post_type:  $postType.val(),
 				title:      $titleIn.val().trim(),
 				slug:       $slugIn.val().trim(),
-				status:     $( 'input[name="oto-status"]:checked' ).val(),
-				parent:     $parent.val() || '0'
+				status:           $( 'input[name="oto-status"]:checked' ).val(),
+				parent:           $parent.val() || '0',
+				content_area_ids: $( '#asae-ci-ca-one-to-one' ).val() || []
 			} ).done( function ( resp ) {
 				// Display all log lines.
 				var logEntries = resp.data && resp.data.log ? resp.data.log : [];

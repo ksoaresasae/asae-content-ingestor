@@ -86,6 +86,12 @@ class ASAE_CI_Admin {
 		// Settings tab.
 		add_action( 'wp_ajax_asae_ci_check_updates', [ __CLASS__, 'ajax_check_updates' ] );
 
+		// Content Areas (ASAE Publishing Workflow integration).
+		add_action( 'wp_ajax_asae_ci_create_content_area',  [ __CLASS__, 'ajax_create_content_area' ] );
+		add_action( 'wp_ajax_asae_ci_bulk_assign_areas_start',    [ __CLASS__, 'ajax_bulk_assign_areas_start' ] );
+		add_action( 'wp_ajax_asae_ci_bulk_assign_areas_process',  [ __CLASS__, 'ajax_bulk_assign_areas_process' ] );
+		add_action( 'wp_ajax_asae_ci_bulk_assign_areas_progress', [ __CLASS__, 'ajax_bulk_assign_areas_progress' ] );
+
 		// Sponsor taxonomy term meta fields.
 		add_action( 'sponsor_edit_form_fields', [ __CLASS__, 'sponsor_edit_fields' ], 10, 2 );
 		add_action( 'sponsor_add_form_fields',  [ __CLASS__, 'sponsor_add_fields' ] );
@@ -170,6 +176,7 @@ class ASAE_CI_Admin {
 			'runningJobKey' => $running_job_key,
 			'sponsorSlugs'  => self::get_sponsor_slugs(),
 			'pluginsUrl'    => admin_url( 'plugins.php' ),
+			'runningBulkAssignJobKey' => ( $bulk_job = ASAE_CI_Scheduler::get_running_bulk_assign_job() ) ? $bulk_job['job_key'] : '',
 			'strings'       => [
 				'startingJob'    => __( 'Starting job…', 'asae-content-ingestor' ),
 				'discovering'    => __( 'Reading RSS feed…', 'asae-content-ingestor' ),
@@ -302,6 +309,122 @@ class ASAE_CI_Admin {
 		echo '</nav>';
 	}
 
+	// ── Content Areas (Publishing Workflow integration) ───────────────────────
+
+	/** Taxonomy slug used by ASAE Publishing Workflow. */
+	const CONTENT_AREA_TAXONOMY = 'asae_content_area';
+
+	/**
+	 * Returns true if the ASAE Publishing Workflow plugin is active and the
+	 * Content Areas taxonomy is registered.
+	 */
+	public static function is_publishing_workflow_active(): bool {
+		return taxonomy_exists( self::CONTENT_AREA_TAXONOMY );
+	}
+
+	/**
+	 * Renders a Content Areas picker (multi-select + add new).
+	 *
+	 * @param string $field_name HTML name attribute (the field is always multi-select).
+	 * @param string $instance   Unique instance suffix so multiple pickers on the same
+	 *                           page get unique element IDs.
+	 * @param bool   $disabled   Render the picker in a visually-disabled state with a
+	 *                           "feature unavailable" notice (used on Clean Up tab when
+	 *                           Publishing Workflow is not active).
+	 */
+	public static function render_content_areas_picker( string $field_name, string $instance = 'default', bool $disabled = false ): void {
+		$active = self::is_publishing_workflow_active();
+		if ( ! $active && ! $disabled ) {
+			// Hidden when feature unavailable on the ingestion tabs.
+			return;
+		}
+
+		$select_id   = 'asae-ci-ca-' . sanitize_html_class( $instance );
+		$add_name_id = $select_id . '-new-name';
+		$add_par_id  = $select_id . '-new-parent';
+		$add_btn_id  = $select_id . '-add-btn';
+		$add_msg_id  = $select_id . '-add-msg';
+
+		$terms = $active ? get_terms( [
+			'taxonomy'   => self::CONTENT_AREA_TAXONOMY,
+			'hide_empty' => false,
+			'orderby'    => 'name',
+		] ) : [];
+
+		$disabled_attr = $disabled || ! $active ? ' disabled' : '';
+		?>
+		<div class="asae-ci-field asae-ci-content-areas-picker" data-instance="<?php echo esc_attr( $instance ); ?>">
+			<label for="<?php echo esc_attr( $select_id ); ?>">
+				<?php esc_html_e( 'Content Areas', 'asae-content-ingestor' ); ?>
+				<?php if ( $disabled || ! $active ) : ?>
+					<em style="color:#666;font-weight:normal;">
+						(<?php esc_html_e( 'disabled — ASAE Publishing Workflow plugin not active', 'asae-content-ingestor' ); ?>)
+					</em>
+				<?php endif; ?>
+			</label>
+			<select
+				id="<?php echo esc_attr( $select_id ); ?>"
+				name="<?php echo esc_attr( $field_name ); ?>[]"
+				multiple
+				size="6"
+				class="asae-ci-ca-select"
+				style="min-width:300px;"
+				<?php echo $disabled_attr; ?>
+			>
+				<?php
+				if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+					self::render_content_area_options( $terms, 0 );
+				}
+				?>
+			</select>
+			<p class="description">
+				<?php esc_html_e( 'Hold Ctrl/Cmd to select multiple. These will be assigned to every item processed in this run, replacing any previously assigned Content Areas.', 'asae-content-ingestor' ); ?>
+			</p>
+
+			<div class="asae-ci-ca-add" style="margin-top:8px;padding:8px;background:#f6f7f7;border:1px solid #dcdcde;border-radius:3px;">
+				<strong><?php esc_html_e( 'Add a new Content Area', 'asae-content-ingestor' ); ?></strong><br>
+				<input
+					type="text"
+					id="<?php echo esc_attr( $add_name_id ); ?>"
+					placeholder="<?php esc_attr_e( 'New Content Area name', 'asae-content-ingestor' ); ?>"
+					style="margin-right:6px;"
+					<?php echo $disabled_attr; ?>
+				/>
+				<select id="<?php echo esc_attr( $add_par_id ); ?>"<?php echo $disabled_attr; ?>>
+					<option value="0"><?php esc_html_e( '(no parent)', 'asae-content-ingestor' ); ?></option>
+					<?php
+					if ( ! is_wp_error( $terms ) && ! empty( $terms ) ) {
+						self::render_content_area_options( $terms, 0, true );
+					}
+					?>
+				</select>
+				<button type="button" class="button asae-ci-ca-add-btn" id="<?php echo esc_attr( $add_btn_id ); ?>" data-target="<?php echo esc_attr( $select_id ); ?>" data-name-input="<?php echo esc_attr( $add_name_id ); ?>" data-parent-input="<?php echo esc_attr( $add_par_id ); ?>" data-msg="<?php echo esc_attr( $add_msg_id ); ?>"<?php echo $disabled_attr; ?>>
+					<?php esc_html_e( 'Add', 'asae-content-ingestor' ); ?>
+				</button>
+				<span id="<?php echo esc_attr( $add_msg_id ); ?>" style="margin-left:8px;"></span>
+			</div>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Recursive helper to render hierarchical <option> rows for the picker.
+	 *
+	 * @param array $terms     Flat list of WP_Term objects.
+	 * @param int   $parent_id Current parent term_id to render children of.
+	 * @param bool  $for_parent_dropdown True when rendering options for the "parent" select.
+	 */
+	private static function render_content_area_options( array $terms, int $parent_id, bool $for_parent_dropdown = false, int $depth = 0 ): void {
+		foreach ( $terms as $term ) {
+			if ( (int) $term->parent !== $parent_id ) {
+				continue;
+			}
+			$indent = str_repeat( '— ', $depth );
+			echo '<option value="' . esc_attr( $term->term_id ) . '">' . esc_html( $indent . $term->name ) . '</option>';
+			self::render_content_area_options( $terms, (int) $term->term_id, $for_parent_dropdown, $depth + 1 );
+		}
+	}
+
 	// ── AJAX Handlers ──────────��────────────────────────────��─────────────────
 
 	/**
@@ -321,6 +444,7 @@ class ASAE_CI_Admin {
 		$run_type        = sanitize_text_field( $_POST['run_type']          ?? 'dry' );
 		$additional_tags = sanitize_text_field( wp_unslash( $_POST['additional_tags'] ?? '' ) );
 		$source_type     = sanitize_text_field( $_POST['source_type'] ?? 'replace' );
+		$content_area_ids = array_values( array_filter( array_map( 'absint', (array) ( $_POST['content_area_ids'] ?? [] ) ) ) );
 
 		if ( empty( $source_url ) ) {
 			wp_send_json_error( [ 'message' => __( 'An RSS feed URL is required.', 'asae-content-ingestor' ) ] );
@@ -342,13 +466,14 @@ class ASAE_CI_Admin {
 		}
 
 		$job_key = ASAE_CI_Scheduler::create_job( [
-			'source_url'      => $source_url,
-			'url_restriction' => $url_restriction ?: null,
-			'post_type'       => $post_type,
-			'batch_limit'     => $batch_limit,
-			'run_type'        => $run_type,
-			'additional_tags' => $additional_tags,
-			'source_type'     => $source_type,
+			'source_url'       => $source_url,
+			'url_restriction'  => $url_restriction ?: null,
+			'post_type'        => $post_type,
+			'batch_limit'      => $batch_limit,
+			'run_type'         => $run_type,
+			'additional_tags'  => $additional_tags,
+			'source_type'      => $source_type,
+			'content_area_ids' => $content_area_ids,
 		] );
 
 		if ( is_wp_error( $job_key ) ) {
@@ -1829,8 +1954,9 @@ class ASAE_CI_Admin {
 		$post_type      = sanitize_key( $_POST['post_type'] ?? 'post' );
 		$custom_title   = sanitize_text_field( wp_unslash( $_POST['title'] ?? '' ) );
 		$custom_slug    = sanitize_title( $_POST['slug'] ?? '' );
-		$desired_status = sanitize_key( $_POST['status'] ?? 'draft' );
-		$parent_id      = (int) ( $_POST['parent'] ?? 0 );
+		$desired_status   = sanitize_key( $_POST['status'] ?? 'draft' );
+		$parent_id        = (int) ( $_POST['parent'] ?? 0 );
+		$content_area_ids = array_values( array_filter( array_map( 'absint', (array) ( $_POST['content_area_ids'] ?? [] ) ) ) );
 
 		$log = [];
 
@@ -1987,6 +2113,12 @@ class ASAE_CI_Admin {
 		update_post_meta( $post_id, '_asae_ci_source_url', esc_url_raw( $source_url ) );
 		$log[] = 'Stored source URL as post meta.';
 
+		// Step 8b: Assign Content Areas if requested and Publishing Workflow is active.
+		if ( ! empty( $content_area_ids ) && self::is_publishing_workflow_active() ) {
+			wp_set_object_terms( $post_id, $content_area_ids, self::CONTENT_AREA_TAXONOMY, false );
+			$log[] = 'Assigned ' . count( $content_area_ids ) . ' Content Area(s).';
+		}
+
 		// Step 9: Assign tags (only for post types that support them).
 		$tags = array_values( array_unique( array_filter( $parsed['tags'] ?? [] ) ) );
 		if ( ! empty( $tags ) && is_object_in_taxonomy( $post_type, 'post_tag' ) ) {
@@ -2133,6 +2265,134 @@ class ASAE_CI_Admin {
 			'latest_version'  => $latest_version,
 			'update_available' => $latest_version && version_compare( $latest_version, ASAE_CI_VERSION, '>' ),
 		] );
+	}
+
+	// ── Content Areas AJAX ────────────────────────────────────────────────────
+
+	/**
+	 * AJAX: Creates a new Content Area term.
+	 */
+	public static function ajax_create_content_area(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => 'Permission denied.' ] );
+		}
+
+		if ( ! self::is_publishing_workflow_active() ) {
+			wp_send_json_error( [ 'message' => 'ASAE Publishing Workflow plugin is not active.' ] );
+		}
+
+		$name      = sanitize_text_field( wp_unslash( $_POST['name'] ?? '' ) );
+		$parent_id = (int) ( $_POST['parent'] ?? 0 );
+
+		if ( '' === $name ) {
+			wp_send_json_error( [ 'message' => 'Name is required.' ] );
+		}
+
+		$args = [];
+		if ( $parent_id > 0 ) {
+			$args['parent'] = $parent_id;
+		}
+
+		$result = wp_insert_term( $name, self::CONTENT_AREA_TAXONOMY, $args );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ] );
+		}
+
+		$term_id = (int) $result['term_id'];
+		$term    = get_term( $term_id, self::CONTENT_AREA_TAXONOMY );
+		// Compute depth for indentation in the picker.
+		$depth = 0;
+		$cur   = $term;
+		while ( $cur && (int) $cur->parent > 0 ) {
+			$depth++;
+			$cur = get_term( $cur->parent, self::CONTENT_AREA_TAXONOMY );
+		}
+
+		wp_send_json_success( [
+			'term_id' => $term_id,
+			'name'    => $term->name,
+			'depth'   => $depth,
+		] );
+	}
+
+	// ── Bulk Assign Content Areas (Clean Up) AJAX ─────────────────────────────
+
+	/**
+	 * AJAX: Starts a bulk-assign-content-areas job.
+	 */
+	public static function ajax_bulk_assign_areas_start(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => 'Permission denied.' ] );
+		}
+		if ( ! self::is_publishing_workflow_active() ) {
+			wp_send_json_error( [ 'message' => 'ASAE Publishing Workflow plugin is not active.' ] );
+		}
+
+		$post_type    = sanitize_key( $_POST['post_type'] ?? 'post' );
+		$filter_mode  = sanitize_key( $_POST['filter_mode'] ?? 'all' ); // all|none|has_any|has_term
+		$filter_term  = (int) ( $_POST['filter_term'] ?? 0 );
+		$target_ids   = array_filter( array_map( 'absint', (array) ( $_POST['target_ids'] ?? [] ) ) );
+
+		if ( empty( $target_ids ) ) {
+			wp_send_json_error( [ 'message' => 'Select at least one target Content Area.' ] );
+		}
+
+		$job_key = ASAE_CI_Scheduler::create_bulk_assign_areas_job( [
+			'post_type'   => $post_type,
+			'filter_mode' => $filter_mode,
+			'filter_term' => $filter_term,
+			'target_ids'  => array_values( $target_ids ),
+		] );
+
+		if ( is_wp_error( $job_key ) ) {
+			wp_send_json_error( [ 'message' => $job_key->get_error_message() ] );
+		}
+
+		wp_send_json_success( [ 'job_key' => $job_key ] );
+	}
+
+	/**
+	 * AJAX: Processes one batch of a bulk-assign job and returns progress.
+	 */
+	public static function ajax_bulk_assign_areas_process(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => 'Permission denied.' ] );
+		}
+
+		$job_key = sanitize_text_field( wp_unslash( $_POST['job_key'] ?? '' ) );
+		if ( '' === $job_key ) {
+			wp_send_json_error( [ 'message' => 'Missing job_key.' ] );
+		}
+
+		$result = ASAE_CI_Scheduler::process_bulk_assign_areas_batch( $job_key );
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( [ 'message' => $result->get_error_message() ] );
+		}
+		wp_send_json_success( $result );
+	}
+
+	/**
+	 * AJAX: Returns the progress snapshot of a bulk-assign job without processing.
+	 */
+	public static function ajax_bulk_assign_areas_progress(): void {
+		check_ajax_referer( self::AJAX_NONCE, 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( [ 'message' => 'Permission denied.' ] );
+		}
+
+		$job_key = sanitize_text_field( wp_unslash( $_POST['job_key'] ?? '' ) );
+		if ( '' === $job_key ) {
+			wp_send_json_error( [ 'message' => 'Missing job_key.' ] );
+		}
+
+		$job = ASAE_CI_Scheduler::get_job( $job_key );
+		if ( ! $job ) {
+			wp_send_json_error( [ 'message' => 'Job not found.' ] );
+		}
+		wp_send_json_success( ASAE_CI_Scheduler::build_bulk_assign_progress( $job ) );
 	}
 
 	// ── Sponsor Taxonomy Term Meta Fields ─────────────────────────────────────

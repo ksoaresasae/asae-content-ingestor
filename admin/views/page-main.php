@@ -116,6 +116,8 @@ if ( ! current_user_can( 'manage_options' ) ) {
 				</p>
 			</div>
 
+			<?php ASAE_CI_Admin::render_content_areas_picker( 'content_area_ids', 'general-run' ); ?>
+
 			<!-- Post Type -->
 			<div class="asae-ci-field">
 				<label for="asae-ci-post-type">

@@ -128,6 +128,13 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<!-- Populated dynamically by admin.js -->
 		</div>
 
+		<?php ASAE_CI_Admin::render_content_areas_picker( 'wpr_content_area_ids', 'wp-rest' ); ?>
+		<?php if ( ASAE_CI_Admin::is_publishing_workflow_active() ) : ?>
+		<p class="description">
+			<?php esc_html_e( 'Selected Content Areas will be saved as the default for the next General Run that ingests this feed.', 'asae-content-ingestor' ); ?>
+		</p>
+		<?php endif; ?>
+
 		<div class="asae-ci-submit-row" style="margin-top:1em;">
 			<button type="button" id="asae-ci-wpr-generate-btn" class="button button-primary" disabled>
 				<?php esc_html_e( 'Generate Feed', 'asae-content-ingestor' ); ?>

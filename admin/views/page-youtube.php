@@ -125,6 +125,13 @@ if ( ! current_user_can( 'manage_options' ) ) {
 			<?php esc_html_e( 'Fetches all videos from the saved channel/playlist and generates an Atom XML feed.', 'asae-content-ingestor' ); ?>
 		</p>
 
+		<?php ASAE_CI_Admin::render_content_areas_picker( 'yt_content_area_ids', 'youtube' ); ?>
+		<?php if ( ASAE_CI_Admin::is_publishing_workflow_active() ) : ?>
+		<p class="description">
+			<?php esc_html_e( 'Selected Content Areas will be saved as the default for the next General Run that ingests this feed.', 'asae-content-ingestor' ); ?>
+		</p>
+		<?php endif; ?>
+
 		<div class="asae-ci-submit-row">
 			<button type="button" id="asae-ci-yt-generate-btn" class="button button-primary">
 				<?php esc_html_e( 'Fetch & Generate Feed', 'asae-content-ingestor' ); ?>

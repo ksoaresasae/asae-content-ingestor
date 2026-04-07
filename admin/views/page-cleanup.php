@@ -203,4 +203,116 @@ if ( ! current_user_can( 'manage_options' ) ) {
 		</table>
 	</div>
 
+	<!-- ── Section 7: Bulk Assign Content Areas ───────────────────────────── -->
+
+	<?php $pw_active = ASAE_CI_Admin::is_publishing_workflow_active(); ?>
+	<div class="asae-ci-panel" id="asae-ci-bulk-areas-section">
+		<h2><?php esc_html_e( 'Bulk Assign Content Areas', 'asae-content-ingestor' ); ?></h2>
+		<?php if ( ! $pw_active ) : ?>
+			<p class="description" style="color:#b32d2e;">
+				<strong><?php esc_html_e( 'Disabled — ASAE Publishing Workflow plugin is not active.', 'asae-content-ingestor' ); ?></strong>
+				<?php esc_html_e( 'Activate the ASAE Publishing Workflow plugin to enable this feature.', 'asae-content-ingestor' ); ?>
+			</p>
+		<?php else : ?>
+			<p class="description">
+				<?php esc_html_e( 'Assign one or more Content Areas to many existing posts at once. This replaces any previously assigned Content Areas on each affected post.', 'asae-content-ingestor' ); ?>
+			</p>
+		<?php endif; ?>
+
+		<table class="form-table" role="presentation">
+			<tr>
+				<th scope="row">
+					<label for="asae-ci-bulk-areas-post-type"><?php esc_html_e( 'Post Type', 'asae-content-ingestor' ); ?></label>
+				</th>
+				<td>
+					<select id="asae-ci-bulk-areas-post-type"<?php disabled( ! $pw_active ); ?>>
+						<?php
+						$pts = ASAE_CI_Admin::get_eligible_post_types();
+						foreach ( $pts as $slug => $pt_obj ) :
+							?>
+							<option value="<?php echo esc_attr( $slug ); ?>"><?php echo esc_html( $pt_obj->label ); ?> (<?php echo esc_html( $slug ); ?>)</option>
+						<?php endforeach; ?>
+					</select>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Filter', 'asae-content-ingestor' ); ?></th>
+				<td>
+					<label>
+						<input type="radio" name="asae-ci-bulk-areas-filter" value="all" checked<?php disabled( ! $pw_active ); ?> />
+						<?php esc_html_e( 'All posts of this type', 'asae-content-ingestor' ); ?>
+					</label><br>
+					<label>
+						<input type="radio" name="asae-ci-bulk-areas-filter" value="none"<?php disabled( ! $pw_active ); ?> />
+						<?php esc_html_e( 'Only posts with NO Content Area assigned', 'asae-content-ingestor' ); ?>
+					</label><br>
+					<label>
+						<input type="radio" name="asae-ci-bulk-areas-filter" value="has_any"<?php disabled( ! $pw_active ); ?> />
+						<?php esc_html_e( 'Only posts that already have ANY Content Area', 'asae-content-ingestor' ); ?>
+					</label><br>
+					<label>
+						<input type="radio" name="asae-ci-bulk-areas-filter" value="has_term"<?php disabled( ! $pw_active ); ?> />
+						<?php esc_html_e( 'Only posts that have this specific Content Area:', 'asae-content-ingestor' ); ?>
+					</label>
+					<select id="asae-ci-bulk-areas-filter-term" style="margin-left:8px;"<?php disabled( ! $pw_active ); ?>>
+						<option value="0">— <?php esc_html_e( 'select', 'asae-content-ingestor' ); ?> —</option>
+						<?php
+						if ( $pw_active ) {
+							$filter_terms = get_terms( [
+								'taxonomy'   => ASAE_CI_Admin::CONTENT_AREA_TAXONOMY,
+								'hide_empty' => false,
+								'orderby'    => 'name',
+							] );
+							if ( ! is_wp_error( $filter_terms ) ) {
+								foreach ( $filter_terms as $t ) {
+									echo '<option value="' . esc_attr( $t->term_id ) . '">' . esc_html( $t->name ) . '</option>';
+								}
+							}
+						}
+						?>
+					</select>
+				</td>
+			</tr>
+		</table>
+
+		<?php ASAE_CI_Admin::render_content_areas_picker( 'asae_ci_bulk_areas_target', 'cleanup-bulk', ! $pw_active ); ?>
+
+		<p>
+			<label class="asae-ci-toggle-label">
+				<input type="checkbox" id="asae-ci-bulk-areas-keep-alive"<?php disabled( ! $pw_active ); ?> />
+				<?php esc_html_e( 'Keep session alive during run', 'asae-content-ingestor' ); ?>
+			</label>
+		</p>
+
+		<p>
+			<button type="button" id="asae-ci-bulk-areas-start-btn" class="button button-primary"<?php disabled( ! $pw_active ); ?>>
+				<?php esc_html_e( 'Start Bulk Assignment', 'asae-content-ingestor' ); ?>
+			</button>
+			<button type="button" id="asae-ci-bulk-areas-cancel-btn" class="button asae-ci-hidden">
+				<?php esc_html_e( 'Cancel Job', 'asae-content-ingestor' ); ?>
+			</button>
+		</p>
+
+		<div id="asae-ci-bulk-areas-resume-banner" class="asae-ci-hidden" style="padding:10px;background:#fff3cd;border:1px solid #ffc107;border-radius:3px;margin:10px 0;">
+			<strong><?php esc_html_e( 'A previous bulk-assign job is still running.', 'asae-content-ingestor' ); ?></strong>
+			<button type="button" id="asae-ci-bulk-areas-resume-btn" class="button button-primary" style="margin-left:8px;"><?php esc_html_e( 'Resume', 'asae-content-ingestor' ); ?></button>
+		</div>
+
+		<div id="asae-ci-bulk-areas-progress" class="asae-ci-hidden" aria-live="polite" style="margin-top:12px;">
+			<p>
+				<strong><?php esc_html_e( 'Status:', 'asae-content-ingestor' ); ?></strong>
+				<span id="asae-ci-bulk-areas-status"><?php esc_html_e( 'Starting…', 'asae-content-ingestor' ); ?></span>
+			</p>
+			<div class="asae-ci-progress-bar-wrap" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="asae-ci-bulk-areas-bar-wrap">
+				<div class="asae-ci-progress-bar" id="asae-ci-bulk-areas-bar" style="width:0%"></div>
+			</div>
+			<p>
+				<span id="asae-ci-bulk-areas-processed">0</span> /
+				<span id="asae-ci-bulk-areas-total">0</span> <?php esc_html_e( 'processed,', 'asae-content-ingestor' ); ?>
+				<span id="asae-ci-bulk-areas-failed">0</span> <?php esc_html_e( 'failed.', 'asae-content-ingestor' ); ?>
+			</p>
+		</div>
+		<div id="asae-ci-bulk-areas-result" class="asae-ci-hidden" aria-live="polite"></div>
+	</div>
+
 </div>

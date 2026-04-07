@@ -60,19 +60,21 @@ class ASAE_CI_Scheduler {
 		$additional_tags = sanitize_text_field( $args['additional_tags'] ?? '' );
 		$source_type     = in_array( $args['source_type'] ?? 'replace', [ 'replace', 'mirror' ], true )
 		                   ? $args['source_type'] : 'replace';
+		$content_area_ids = array_values( array_filter( array_map( 'absint', (array) ( $args['content_area_ids'] ?? [] ) ) ) );
 
 		// Initial job queue_data blob.
 		$queue_data = [
-			'discovery'       => $initial_queue,
-			'ingestion'       => [
+			'discovery'        => $initial_queue,
+			'ingestion'        => [
 				'queue'     => [],  // Populated after discovery completes.
 				'processed' => 0,
 				'failed'    => 0,
 			],
-			'dry_results'     => [],    // Populated during Dry Run preview.
-			'additional_tags' => $additional_tags, // Batch-level tags applied to every item.
-			'pending_review'  => [],    // Items that need manual category assignment.
-			'source_type'     => $source_type,     // 'replace' or 'mirror'.
+			'dry_results'      => [],    // Populated during Dry Run preview.
+			'additional_tags'  => $additional_tags, // Batch-level tags applied to every item.
+			'pending_review'   => [],    // Items that need manual category assignment.
+			'source_type'      => $source_type,     // 'replace' or 'mirror'.
+			'content_area_ids' => $content_area_ids, // Applied to every ingested item.
 		];
 
 		$now     = current_time( 'mysql' );
@@ -135,6 +137,211 @@ class ASAE_CI_Scheduler {
 		return $job_key;
 	}
 
+	// ── Bulk Assign Content Areas Job ─────────────────────────────────────────
+
+	/**
+	 * Creates a new bulk-assign-content-areas job.
+	 *
+	 * @param array $args {
+	 *   @type string $post_type   WP post type to update (e.g. 'post').
+	 *   @type string $filter_mode 'all' | 'none' | 'has_any' | 'has_term'.
+	 *   @type int    $filter_term Term ID for 'has_term' filter.
+	 *   @type int[]  $target_ids  Content Area term IDs to assign (replace mode).
+	 * }
+	 * @return string|WP_Error
+	 */
+	public static function create_bulk_assign_areas_job( array $args ) {
+		global $wpdb;
+
+		$post_type   = sanitize_key( $args['post_type'] ?? 'post' );
+		$filter_mode = in_array( $args['filter_mode'] ?? 'all', [ 'all', 'none', 'has_any', 'has_term' ], true )
+			? $args['filter_mode']
+			: 'all';
+		$filter_term = (int) ( $args['filter_term'] ?? 0 );
+		$target_ids  = array_values( array_filter( array_map( 'absint', (array) ( $args['target_ids'] ?? [] ) ) ) );
+
+		if ( empty( $target_ids ) ) {
+			return new WP_Error( 'asae_ci_no_targets', 'At least one target Content Area is required.' );
+		}
+
+		// Build the post ID list using a tax_query if needed.
+		$query_args = [
+			'post_type'      => $post_type,
+			'post_status'    => [ 'publish', 'draft', 'pending', 'private', 'future' ],
+			'fields'         => 'ids',
+			'posts_per_page' => -1,
+			'no_found_rows'  => true,
+		];
+
+		$tax = ASAE_CI_Admin::CONTENT_AREA_TAXONOMY;
+		if ( 'has_any' === $filter_mode ) {
+			$query_args['tax_query'] = [
+				[
+					'taxonomy' => $tax,
+					'operator' => 'EXISTS',
+				],
+			];
+		} elseif ( 'none' === $filter_mode ) {
+			$query_args['tax_query'] = [
+				[
+					'taxonomy' => $tax,
+					'operator' => 'NOT EXISTS',
+				],
+			];
+		} elseif ( 'has_term' === $filter_mode && $filter_term > 0 ) {
+			$query_args['tax_query'] = [
+				[
+					'taxonomy' => $tax,
+					'field'    => 'term_id',
+					'terms'    => [ $filter_term ],
+				],
+			];
+		}
+
+		$post_ids = get_posts( $query_args );
+		$post_ids = array_map( 'intval', (array) $post_ids );
+
+		$queue_data = [
+			'post_type'   => $post_type,
+			'filter_mode' => $filter_mode,
+			'filter_term' => $filter_term,
+			'target_ids'  => $target_ids,
+			'queue'       => $post_ids,
+			'total'       => count( $post_ids ),
+			'processed'   => 0,
+			'failed'      => 0,
+		];
+
+		$now     = current_time( 'mysql' );
+		$job_key = 'job_' . gmdate( 'Ymd_His' ) . '_' . wp_generate_password( 6, false );
+
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$inserted = $wpdb->insert(
+			ASAE_CI_DB::jobs_table(),
+			[
+				'job_key'     => $job_key,
+				'status'      => 'running',
+				'run_type'    => 'active',
+				'source_url'  => 'bulk-assign-areas:' . $post_type,
+				'post_type'   => $post_type,
+				'batch_limit' => 'all',
+				'phase'       => 'bulk_assign_areas',
+				'queue_data'  => wp_json_encode( $queue_data ),
+				'report_id'   => null,
+				'created_at'  => $now,
+				'updated_at'  => $now,
+			],
+			[ '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s' ]
+		);
+		// phpcs:enable
+
+		if ( ! $inserted ) {
+			return new WP_Error( 'asae_ci_db_error', 'Failed to create bulk-assign job record.' );
+		}
+
+		// Schedule first cron tick so the job continues even if the browser closes.
+		wp_schedule_single_event( time(), ASAE_CI_CRON_HOOK, [ $job_key ] );
+
+		return $job_key;
+	}
+
+	/**
+	 * Processes one batch of a bulk-assign-content-areas job (called from AJAX poll).
+	 *
+	 * @param string $job_key
+	 * @return array|WP_Error Progress snapshot.
+	 */
+	public static function process_bulk_assign_areas_batch( string $job_key ) {
+		$job = self::get_job( $job_key );
+		if ( ! $job ) {
+			return new WP_Error( 'asae_ci_no_job', 'Job not found.' );
+		}
+		if ( 'bulk_assign_areas' !== $job['phase'] ) {
+			return self::build_bulk_assign_progress( $job );
+		}
+		if ( 'running' !== $job['status'] ) {
+			return self::build_bulk_assign_progress( $job );
+		}
+
+		$queue_data = json_decode( $job['queue_data'], true );
+		$queue_data = self::run_bulk_assign_areas_batch( $queue_data, $job );
+
+		$job = self::get_job( $job_key );
+		return self::build_bulk_assign_progress( $job, $queue_data );
+	}
+
+	/**
+	 * Internal: pop N post IDs and assign Content Areas.
+	 */
+	private static function run_bulk_assign_areas_batch( array $queue_data, array $job ): array {
+		$queue      = $queue_data['queue']      ?? [];
+		$processed  = (int) ( $queue_data['processed'] ?? 0 );
+		$failed     = (int) ( $queue_data['failed']    ?? 0 );
+		$target_ids = $queue_data['target_ids'] ?? [];
+
+		// Process up to 50 posts per batch — much faster than ingestion since it's just term assignment.
+		$batch_size = 50;
+		$count      = 0;
+
+		while ( ! empty( $queue ) && $count < $batch_size ) {
+			$post_id = (int) array_shift( $queue );
+			$count++;
+
+			if ( $post_id <= 0 ) {
+				$failed++;
+				continue;
+			}
+
+			$result = wp_set_object_terms( $post_id, $target_ids, ASAE_CI_Admin::CONTENT_AREA_TAXONOMY, false );
+			if ( is_wp_error( $result ) ) {
+				$failed++;
+			} else {
+				$processed++;
+			}
+		}
+
+		$queue_data['queue']     = $queue;
+		$queue_data['processed'] = $processed;
+		$queue_data['failed']    = $failed;
+
+		if ( empty( $queue ) ) {
+			self::update_job( $job['job_key'], [
+				'status'     => 'completed',
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
+		} else {
+			self::update_job( $job['job_key'], [
+				'queue_data' => wp_json_encode( $queue_data ),
+			] );
+		}
+
+		return $queue_data;
+	}
+
+	/**
+	 * Builds a progress response for a bulk-assign job.
+	 */
+	public static function build_bulk_assign_progress( array $job, ?array $queue_data = null ): array {
+		if ( null === $queue_data ) {
+			$queue_data = json_decode( $job['queue_data'], true );
+		}
+		$total     = (int) ( $queue_data['total']     ?? 0 );
+		$processed = (int) ( $queue_data['processed'] ?? 0 );
+		$failed    = (int) ( $queue_data['failed']    ?? 0 );
+		$remaining = count( $queue_data['queue'] ?? [] );
+
+		return [
+			'job_key'     => $job['job_key'],
+			'status'      => $job['status'],
+			'phase'       => $job['phase'],
+			'total'       => $total,
+			'processed'   => $processed,
+			'failed'      => $failed,
+			'remaining'   => $remaining,
+			'is_complete' => 'completed' === $job['status'] || 'failed' === $job['status'],
+		];
+	}
+
 	// ── Batch Processing (Admin AJAX – drives progress while browser is open) ─
 
 	/**
@@ -190,6 +397,8 @@ class ASAE_CI_Scheduler {
 			$queue_data = self::run_discovery_batch( $queue_data, $job );
 		} elseif ( 'ingestion' === $job['phase'] ) {
 			$queue_data = self::run_ingestion_batch( $queue_data, $job );
+		} elseif ( 'bulk_assign_areas' === $job['phase'] ) {
+			$queue_data = self::run_bulk_assign_areas_batch( $queue_data, $job );
 		}
 
 		// Refresh and reschedule if still running.
@@ -313,8 +522,9 @@ class ASAE_CI_Scheduler {
 		$limit_int      = self::batch_limit_to_int( $job['batch_limit'], $job['run_type'] );
 
 		// Parse batch-level extra tags from the stored comma-separated string.
-		$extra_tags  = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
-		$source_type = $queue_data['source_type'] ?? 'replace';
+		$extra_tags       = array_filter( array_map( 'trim', explode( ',', $queue_data['additional_tags'] ?? '' ) ) );
+		$source_type      = $queue_data['source_type'] ?? 'replace';
+		$content_area_ids = $queue_data['content_area_ids'] ?? [];
 
 		$count = 0;
 
@@ -365,6 +575,10 @@ class ASAE_CI_Scheduler {
 						'source_url' => $url,
 					];
 					$done++;
+					// Apply Content Areas to draft posts as well.
+					if ( ! empty( $content_area_ids ) && taxonomy_exists( ASAE_CI_Admin::CONTENT_AREA_TAXONOMY ) ) {
+						wp_set_object_terms( (int) $pd['post_id'], $content_area_ids, ASAE_CI_Admin::CONTENT_AREA_TAXONOMY, false );
+					}
 					self::log_report_item( $job, $url, (int) $pd['post_id'], $parsed['tags'] ?? [],
 						'draft', 'Needs category review.',
 						$parsed['title'] ?? '', $parsed['author'] ?? '', $parsed['date'] ?? '' );
@@ -384,6 +598,10 @@ class ASAE_CI_Scheduler {
 				}
 			} else {
 				$done++;
+				// Apply Content Areas to the freshly created post (replace mode).
+				if ( ! empty( $content_area_ids ) && taxonomy_exists( ASAE_CI_Admin::CONTENT_AREA_TAXONOMY ) ) {
+					wp_set_object_terms( (int) $post_id, $content_area_ids, ASAE_CI_Admin::CONTENT_AREA_TAXONOMY, false );
+				}
 				self::log_report_item( $job, $url, $post_id, $parsed['tags'] ?? [], 'ingested',
 					'', $parsed['title'] ?? '', $parsed['author'] ?? '', $parsed['date'] ?? '' );
 				// Stop once we've ingested the requested number of genuinely new items.
@@ -546,7 +764,21 @@ class ASAE_CI_Scheduler {
 		global $wpdb;
 		// phpcs:disable WordPress.DB.DirectDatabaseQuery
 		$row = $wpdb->get_row(
-			'SELECT * FROM ' . ASAE_CI_DB::jobs_table() . " WHERE status = 'running' ORDER BY id DESC LIMIT 1",
+			'SELECT * FROM ' . ASAE_CI_DB::jobs_table() . " WHERE status = 'running' AND phase != 'bulk_assign_areas' ORDER BY id DESC LIMIT 1",
+			ARRAY_A
+		);
+		// phpcs:enable
+		return $row ?: null;
+	}
+
+	/**
+	 * Returns the most recent running bulk-assign-content-areas job, if any.
+	 */
+	public static function get_running_bulk_assign_job(): ?array {
+		global $wpdb;
+		// phpcs:disable WordPress.DB.DirectDatabaseQuery
+		$row = $wpdb->get_row(
+			'SELECT * FROM ' . ASAE_CI_DB::jobs_table() . " WHERE status = 'running' AND phase = 'bulk_assign_areas' ORDER BY id DESC LIMIT 1",
 			ARRAY_A
 		);
 		// phpcs:enable

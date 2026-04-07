@@ -106,6 +106,8 @@ $post_types = ASAE_CI_Admin::get_eligible_post_types();
 			</tr>
 		</table>
 
+		<?php ASAE_CI_Admin::render_content_areas_picker( 'oto_content_area_ids', 'one-to-one' ); ?>
+
 		<p>
 			<button type="button" id="oto-run-btn" class="button button-primary" disabled>
 				<?php esc_html_e( 'Run Ingestion', 'asae-content-ingestor' ); ?>
