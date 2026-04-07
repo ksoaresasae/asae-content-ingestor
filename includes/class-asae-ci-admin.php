@@ -414,7 +414,7 @@ class ASAE_CI_Admin {
 	 * @param int   $parent_id Current parent term_id to render children of.
 	 * @param bool  $for_parent_dropdown True when rendering options for the "parent" select.
 	 */
-	private static function render_content_area_options( array $terms, int $parent_id, bool $for_parent_dropdown = false, int $depth = 0 ): void {
+	public static function render_content_area_options( array $terms, int $parent_id, bool $for_parent_dropdown = false, int $depth = 0 ): void {
 		foreach ( $terms as $term ) {
 			if ( (int) $term->parent !== $parent_id ) {
 				continue;

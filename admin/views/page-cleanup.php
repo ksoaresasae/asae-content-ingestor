@@ -264,9 +264,7 @@ if ( ! current_user_can( 'manage_options' ) ) {
 								'orderby'    => 'name',
 							] );
 							if ( ! is_wp_error( $filter_terms ) ) {
-								foreach ( $filter_terms as $t ) {
-									echo '<option value="' . esc_attr( $t->term_id ) . '">' . esc_html( $t->name ) . '</option>';
-								}
+								ASAE_CI_Admin::render_content_area_options( $filter_terms, 0 );
 							}
 						}
 						?>
